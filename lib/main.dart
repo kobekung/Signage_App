@@ -5,10 +5,14 @@ import 'pages/loading_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
   try {
     await dotenv.load(fileName: ".env");
-  } catch (_) {}
+  } catch (e) {
+    print("Error loading .env: $e");
+  }
   
+  // บังคับแนวนอนสำหรับ Android TV
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
@@ -24,6 +28,8 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      title: 'Signage Player',
+      theme: ThemeData.dark(),
       home: const LoadingPage(),
     );
   }

@@ -9,16 +9,17 @@ class LayoutRenderer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // คำนวณ Scale
+    // คำนวณ Scale เพื่อให้พอดีกับหน้าจอ
     final size = MediaQuery.of(context).size;
     final scaleX = size.width / layout.width;
     final scaleY = size.height / layout.height;
-    final scale = scaleX < scaleY ? scaleX : scaleY; // Maintain Aspect Ratio
+    // เลือก Scale ที่เล็กที่สุดเพื่อคงสัดส่วน (Contain) หรือจะใช้ Stretch ก็ได้
+    final scale = scaleX < scaleY ? scaleX : scaleY; 
 
     return Container(
       width: size.width,
       height: size.height,
-      color: Colors.black,
+      color: Colors.black, // ขอบนอกสีดำ
       child: Center(
         child: Container(
           width: layout.width * scale,

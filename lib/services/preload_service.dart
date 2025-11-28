@@ -1,117 +1,84 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:http/http.dart' as http;
-import '../signage/template_model.dart'; // [สำคัญ] ใช้ Model ใหม่
-import 'cache_manager.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:crypto/crypto.dart'; // อย่าลืมใส่ crypto: ^3.0.3 ใน pubspec.yaml
+import '../models/layout_model.dart';
 
 class PreloadService {
-  // [สำคัญ] เปลี่ยน type ตรงนี้เป็น SignageLayout
-  static Future<void> preloadTemplate({
-    required SignageLayout layout, 
-    required Function({
-      required String url,
-      required int index,
-      required int totalCount,
-      required int downloadedBytes,
-      required int totalBytes,
-    }) onProgress,
-  }) async {
-    final cacheDir = await CacheManager.getCacheDir();
-
-    // 1. ดึง URL จาก Widget ทั้งหมดใน Layout
-    final List<String> allMedia = [];
+  static Future<void> preloadAssets(
+    SignageLayout layout,
+    Function(String, int, int) onProgress,
+  ) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final List<String> urls = _extractUrls(layout);
     
-    for (final widget in layout.widgets) {
-      final props = widget.properties;
-      
-      // หา URL จาก widget ประเภท image/video
-      if (widget.type == 'image' || widget.type == 'video') {
-        // กรณี Single URL
-        if (props['url'] != null && props['url'].toString().isNotEmpty) {
-          final url = props['url'].toString();
-          if (_isMedia(url)) allMedia.add(url);
-        }
+    int completed = 0;
+    // แจ้งสถานะเริ่มต้น
+    onProgress("Checking files...", 0, urls.length);
 
-        // กรณี Playlist
-        if (props['playlist'] is List) {
-          for (final item in props['playlist']) {
-            if (item['url'] != null) {
-              final url = item['url'].toString();
-              if (_isMedia(url)) allMedia.add(url);
-            }
-          }
+    for (var url in urls) {
+      await _downloadFile(url, dir);
+      completed++;
+      onProgress(url, completed, urls.length);
+    }
+  }
+
+  // ดึง URL จาก Widget ทั้งหมด
+  static List<String> _extractUrls(SignageLayout layout) {
+    Set<String> urls = {};
+    for (var w in layout.widgets) {
+      // 1. เช็ค property 'url'
+      if (w.properties['url'] != null) urls.add(w.properties['url'].toString());
+      
+      // 2. เช็ค 'playlist'
+      if (w.properties['playlist'] is List) {
+        for (var item in w.properties['playlist']) {
+          if (item['url'] != null) urls.add(item['url'].toString());
         }
       }
     }
-
-    final total = allMedia.length;
-    if (total == 0) return; // ถ้าไม่มีไฟล์ ก็จบเลย
-
-    int index = 0;
-
-    // 2. Cleanup ไฟล์เก่า
-    final Set<String> usedFileNames = allMedia.map((url) {
-      final ext = url.toLowerCase().contains(".mp4") ? ".mp4" : ".jpg";
-      return "${url.hashCode}$ext";
-    }).toSet();
-
-    await CacheManager.cleanUnusedFiles(usedFileNames);
-    await CacheManager.enforceCacheLimit();
-
-    // 3. Download ไฟล์ใหม่
-    for (final url in allMedia) {
-      index++;
-      await _download(
-        url: url,
-        dir: cacheDir,
-        index: index,
-        total: total,
-        onProgress: onProgress,
-      );
-    }
+    // กรองเอาเฉพาะ http (ไม่เอา blob)
+    return urls.where((u) => u.startsWith('http')).toList();
   }
 
-  static bool _isMedia(String url) {
-    if (url.startsWith('blob:')) return false;
-    final u = url.toLowerCase();
-    return u.startsWith('http') && (
-      u.endsWith(".jpg") || u.endsWith(".jpeg") || u.endsWith(".png") || u.endsWith(".mp4") || u.contains("uploads") || u.contains("picsum")
-    );
-  }
-
-  static Future<void> _download({
-    required String url,
-    required Directory dir,
-    required int index,
-    required int total,
-    required Function onProgress,
-  }) async {
-    String ext = ".jpg";
-    if (url.toLowerCase().contains(".mp4")) ext = ".mp4";
-
-    final fileName = "${url.hashCode}$ext";
-    final file = File("${dir.path}/$fileName");
-
-    if (await file.exists()) {
-      onProgress(url: url, index: index, totalCount: total, downloadedBytes: 100, totalBytes: 100);
-      return;
+  static Future<File> _downloadFile(String url, Directory dir) async {
+    // ใช้ MD5 hash ชื่อไฟล์เพื่อป้องกันปัญหายาวเกินหรืออักขระพิเศษ
+    final filename = md5.convert(utf8.encode(url)).toString();
+    
+    // พยายามเดานามสกุลไฟล์
+    String ext = "";
+    if (url.contains('.')) {
+        ext = ".${url.split('.').last.split('?').first}";
     }
+    
+    final file = File('${dir.path}/$filename$ext');
+
+    // ถ้ามีไฟล์แล้ว ไม่ต้องโหลดใหม่
+    if (await file.exists()) return file;
 
     try {
-      final request = http.Request('GET', Uri.parse(url));
-      final response = await request.send();
-      final totalBytes = response.contentLength ?? 0;
-      int received = 0;
-
-      final sink = file.openWrite();
-      await for (final chunk in response.stream) {
-        received += chunk.length;
-        sink.add(chunk);
-        onProgress(url: url, index: index, totalCount: total, downloadedBytes: received, totalBytes: totalBytes);
+      final response = await http.get(Uri.parse(url));
+      if (response.statusCode == 200) {
+        await file.writeAsBytes(response.bodyBytes);
       }
-      await sink.close();
     } catch (e) {
-      print("Download error: $e");
-      if (await file.exists()) await file.delete();
+      print("Download Error: $e");
     }
+    return file;
+  }
+
+  // ฟังก์ชันช่วยหาไฟล์ในเครื่อง
+  static Future<File?> getCachedFile(String url) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final filename = md5.convert(utf8.encode(url)).toString();
+    try {
+      final files = dir.listSync();
+      for (var f in files) {
+        // หาไฟล์ที่มีชื่อขึ้นต้นด้วย hash ที่เราเจนไว้
+        if (f.path.contains(filename)) return File(f.path);
+      }
+    } catch (_) {}
+    return null;
   }
 }

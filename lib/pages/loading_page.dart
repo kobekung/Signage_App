@@ -25,12 +25,10 @@ class _LoadingPageState extends State<LoadingPage> {
 
   Future<void> _start() async {
     final prefs = await SharedPreferences.getInstance();
-    
-    // 1. ดึง Config
     final url = prefs.getString('api_base_url');
     final id = prefs.getString('selected_layout_id');
 
-    // 2. ถ้าไม่มี Config ให้ไปหน้า Setup
+    // ถ้าไม่มี Config ให้ไปหน้า Setup
     if (url == null || id == null) {
       if(!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const SetupPage()));
@@ -38,12 +36,10 @@ class _LoadingPageState extends State<LoadingPage> {
     }
 
     try {
-      // 3. ดึง Layout จาก API
       setState(() => _status = "Fetching Layout...");
       final api = ApiService(url);
       final layout = await api.fetchLayoutById(id);
 
-      // 4. ดาวน์โหลดไฟล์
       setState(() => _status = "Downloading Media...");
       await PreloadService.preloadAssets(layout, (file, current, total) {
         if(mounted) {
@@ -54,7 +50,6 @@ class _LoadingPageState extends State<LoadingPage> {
         }
       });
 
-      // 5. ไปหน้า Player
       if(!mounted) return;
       Navigator.pushReplacement(
         context, 
@@ -62,7 +57,6 @@ class _LoadingPageState extends State<LoadingPage> {
       );
 
     } catch (e) {
-      // Error -> กลับไป Setup
       if(!mounted) return;
       showDialog(
         context: context, 
@@ -73,7 +67,7 @@ class _LoadingPageState extends State<LoadingPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const SetupPage())), 
-              child: const Text("Setup")
+              child: const Text("Go to Setup")
             )
           ],
         )
@@ -87,20 +81,13 @@ class _LoadingPageState extends State<LoadingPage> {
       backgroundColor: Colors.black,
       body: Center(
         child: Padding(
-          padding: const EdgeInsets.all(40.0),
+          padding: const EdgeInsets.all(40),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              CircularProgressIndicator(
-                value: _progress > 0 ? _progress : null,
-                color: Colors.white,
-              ),
+              CircularProgressIndicator(value: _progress > 0 ? _progress : null, color: Colors.white),
               const SizedBox(height: 20),
-              Text(
-                _status, 
-                style: const TextStyle(color: Colors.white, fontSize: 16), 
-                textAlign: TextAlign.center
-              ),
+              Text(_status, style: const TextStyle(color: Colors.white70), textAlign: TextAlign.center),
             ],
           ),
         ),
