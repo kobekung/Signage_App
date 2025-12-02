@@ -8,11 +8,12 @@ Future<void> main() async {
   
   try {
     await dotenv.load(fileName: ".env");
-  } catch (e) {
-    print("Error loading .env: $e");
-  }
+  } catch (_) {}
   
-  // บังคับแนวนอนสำหรับ Android TV
+  // [เพิ่ม] ซ่อน Status Bar และ Navigation Bar (Full Screen)
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  
+  // บังคับแนวนอน
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
@@ -29,7 +30,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Signage Player',
-      theme: ThemeData.dark(),
+      theme: ThemeData.dark(), // ใช้ Dark theme เพื่อให้พื้นหลังดำสนิท
       home: const LoadingPage(),
     );
   }
