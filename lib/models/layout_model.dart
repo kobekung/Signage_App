@@ -4,6 +4,7 @@ class SignageLayout {
   final String id;
   final String name;
   final double width;
+  final int version;
   final double height;
   final String backgroundColor;
   final List<SignageWidget> widgets;
@@ -12,6 +13,7 @@ class SignageLayout {
     required this.id,
     required this.name,
     required this.width,
+    required this.version,
     required this.height,
     required this.backgroundColor,
     required this.widgets,
@@ -27,6 +29,7 @@ class SignageLayout {
       widgets: (json['widgets'] as List?)
               ?.map((e) => SignageWidget.fromJson(e))
               .toList() ?? [],
+      version: json['version'] ?? 1,
     );
   }
 }

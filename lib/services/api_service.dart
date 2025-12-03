@@ -48,4 +48,15 @@ class ApiService {
     }
     throw Exception('Layout not found');
   }
+  Future<void> updateBusStatus(int busId, int version) async {
+    try {
+      await http.put(
+        Uri.parse('$baseUrl/bus/$busId/ack'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'version': version}),
+      );
+    } catch (e) {
+      print("Failed to report status: $e"); // ไม่ต้อง throw ก็ได้ แค่แจ้งไม่สำเร็จ
+    }
+  }
 }

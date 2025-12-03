@@ -63,6 +63,8 @@ class _LoadingPageState extends State<LoadingPage> {
       }
 
       final serverLayoutId = busConfig['id']; // layout_id
+      final int busId = busConfig['bus_id'];
+      final int companyId = busConfig['company_id'];
       final serverUpdatedAt = busConfig['updated_at'];
 
       if (serverLayoutId == null) {
@@ -100,7 +102,7 @@ class _LoadingPageState extends State<LoadingPage> {
         // บันทึก JSON ของ Layout เก็บไว้ด้วย (เผื่อ Offline คราวหน้า)
         // (ถ้าจะทำสมบูรณ์ ต้องแก้ model ให้มี toJson แต่ตอนนี้โหลดใหม่เอาก็ได้ถ้าระบบเน้น online)
         
-        _goToPlayer(layout);
+        _goToPlayer(layout, busId, companyId);
 
       } else {
         // === กรณีไม่มีอัปเดต (ใช้ของเดิม) ===
@@ -109,7 +111,7 @@ class _LoadingPageState extends State<LoadingPage> {
         // จริงๆ ควรโหลด JSON จาก local storage ถ้าจะ offline 100%
         // แต่ขั้นต้น ดึง JSON ใหม่ (เบาๆ) แต่ไฟล์ Media ใช้ Cache เดิมได้เลย
         
-        _goToPlayer(layout);
+        _goToPlayer(layout, busId, companyId);
       }
 
     } catch (e) {
@@ -124,11 +126,15 @@ class _LoadingPageState extends State<LoadingPage> {
     _retryTimer = Timer(const Duration(seconds: 10), _checkAndUpdate);
   }
 
-  void _goToPlayer(SignageLayout layout) {
+  void _goToPlayer(SignageLayout layout, int busId, int companyId) {
     if(!mounted) return;
     Navigator.pushReplacement(
       context, 
-      MaterialPageRoute(builder: (_) => PlayerPage(layout: layout))
+      MaterialPageRoute(builder: (_) => PlayerPage(
+        layout: layout,
+        busId: busId,          // [NEW]
+        companyId: companyId   // [NEW]
+      ))
     );
   }
 
