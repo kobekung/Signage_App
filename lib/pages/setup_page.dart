@@ -34,7 +34,7 @@ class _SetupPageState extends State<SetupPage> {
     
     setState(() {
       _myDeviceId = id;
-      _urlCtrl.text = savedUrl ?? dotenv.env['API_BASE_URL'] ?? '';
+      _urlCtrl.text = dotenv.env['API_BASE_URL'] ?? '';
     });
   }
 
