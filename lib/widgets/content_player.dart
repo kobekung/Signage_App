@@ -8,10 +8,9 @@ import '../services/preload_service.dart';
 
 class ContentPlayer extends StatefulWidget {
   final SignageWidget widget;
-  final VoidCallback? onFinished;
-  final bool isTriggerMode;
-  // [NEW] เพิ่ม callback บอกแม่ว่า "ตอนนี้ฉันต้องเต็มจอไหม"
-  final Function(bool isFullscreen)? onFullscreenChange;
+  final VoidCallback? onFinished; // เรียกเมื่อเล่นจบ (สำหรับ Trigger Mode)
+  final bool isTriggerMode;       // บอกว่าเป็นโหมดแทรกคิว
+  final Function(bool isFullscreen)? onFullscreenChange; // บอกแม่ว่าตอนนี้ต้องเต็มจอไหม
 
   const ContentPlayer({
     super.key, 
@@ -29,7 +28,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
   int _currentIndex = 0;
   List<dynamic> _playlist = [];
   Widget? _currentContent;
-  Timer? _imageTimer;
+  Timer? _timer;
 
   @override
   void initState() {
@@ -39,13 +38,14 @@ class _ContentPlayerState extends State<ContentPlayer> {
 
   @override
   void dispose() {
-    _imageTimer?.cancel();
+    _timer?.cancel();
     super.dispose();
   }
 
   void _initPlaylist() {
     final props = widget.widget.properties;
     
+    // แปลง Props ให้เป็น List เสมอ
     if (props['playlist'] != null && (props['playlist'] as List).isNotEmpty) {
       _playlist = List.from(props['playlist']);
     } else if (props['url'] != null || props['text'] != null) {
@@ -58,36 +58,34 @@ class _ContentPlayerState extends State<ContentPlayer> {
       }];
     }
 
-    _playNext();
+    if (_playlist.isNotEmpty) {
+      _playNext();
+    }
   }
 
   void _playNext() async {
     if (!mounted) return;
-    if (_playlist.isEmpty) {
-       if (widget.isTriggerMode && widget.onFinished != null) widget.onFinished!();
-       return;
-    }
+    _timer?.cancel();
 
+    // เช็คว่าเล่นจบ Playlist หรือยัง
     if (_currentIndex >= _playlist.length) {
       if (widget.isTriggerMode && widget.onFinished != null) {
-        widget.onFinished!();
+        widget.onFinished!(); // จบงาน Trigger
         return; 
       } else {
-        _currentIndex = 0;
+        _currentIndex = 0; // วนลูปสำหรับโหมดปกติ
       }
     }
 
     final item = _playlist[_currentIndex];
     
-    // --- [NEW] เช็ค Fullscreen และแจ้งแม่ ---
-    // ต้องใช้ PostFrameCallback เพื่อกัน Error "setState during build"
+    // แจ้งแม่เรื่อง Fullscreen (ใช้ PostFrameCallback กัน Error setState during build)
     final isFull = item['fullscreen'] == true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.onFullscreenChange != null) {
+      if (widget.onFullscreenChange != null && mounted) {
          widget.onFullscreenChange!(isFull);
       }
     });
-    // ---------------------------------------
 
     final type = item['type'] ?? widget.widget.type;
     int duration = 10;
@@ -102,16 +100,17 @@ class _ContentPlayerState extends State<ContentPlayer> {
       final url = item['url'];
       File? cachedFile = await PreloadService.getCachedFile(url);
       
+      // Logic: ถ้าเป็น Playlist ปกติที่มี 1 ไฟล์ ให้ Loop
+      // ถ้าเป็น Trigger หรือมีหลายไฟล์ เล่นจบแล้วไปต่อ
+      bool shouldLoop = !widget.isTriggerMode && _playlist.length == 1;
+
       content = _VideoItem(
-        key: ValueKey("$url-$_currentIndex"), 
+        key: ValueKey("$url-$_currentIndex"), // เปลี่ยน Key เพื่อเริ่มเล่นใหม่
         file: cachedFile, 
         url: url,
-        isLooping: _playlist.length == 1 && !widget.isTriggerMode, 
+        isLooping: shouldLoop, 
         onFinished: () {
-           if (mounted) {
-             _currentIndex++;
-             _playNext();
-           }
+           if (mounted) _nextItem();
         }
       );
     } 
@@ -124,21 +123,17 @@ class _ContentPlayerState extends State<ContentPlayer> {
           ? Image.file(cachedFile, fit: BoxFit.cover)
           : Image.network(url, fit: BoxFit.cover);
       
-      _imageTimer?.cancel();
-      _imageTimer = Timer(Duration(seconds: duration), () {
-        if (mounted) {
-          _currentIndex++;
-          _playNext();
-        }
+      _timer = Timer(Duration(seconds: duration), () {
+        if (mounted) _nextItem();
       });
-    } 
+    }
     // --- WEBVIEW ---
     else if (type == 'webview') {
       final url = item['url'] ?? 'https://google.com';
       content = _WebviewItem(url: url);
+      // Webview ปกติไม่เปลี่ยนเอง ต้องตั้งเวลาถ้าเป็น Trigger
       if (widget.isTriggerMode) {
-         _imageTimer?.cancel();
-         _imageTimer = Timer(const Duration(seconds: 15), () => widget.onFinished?.call());
+         _timer = Timer(const Duration(seconds: 15), () => widget.onFinished?.call());
       }
     }
     // --- TICKER ---
@@ -150,8 +145,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
         speed: item['speed'] ?? 50,
       );
        if (widget.isTriggerMode) {
-         _imageTimer?.cancel();
-         _imageTimer = Timer(const Duration(seconds: 15), () => widget.onFinished?.call());
+         _timer = Timer(const Duration(seconds: 15), () => widget.onFinished?.call());
        }
     }
     // --- TEXT ---
@@ -166,9 +160,11 @@ class _ContentPlayerState extends State<ContentPlayer> {
           ),
         ),
       );
+      // Text รอเวลาเปลี่ยน
       if (widget.isTriggerMode) {
-         _imageTimer?.cancel();
-         _imageTimer = Timer(const Duration(seconds: 10), () => widget.onFinished?.call());
+         _timer = Timer(Duration(seconds: duration), () => widget.onFinished?.call());
+      } else if (_playlist.length > 1) {
+         _timer = Timer(Duration(seconds: duration), () => _nextItem());
       }
     }
 
@@ -177,6 +173,11 @@ class _ContentPlayerState extends State<ContentPlayer> {
         _currentContent = content;
       });
     }
+  }
+
+  void _nextItem() {
+      _currentIndex++;
+      _playNext();
   }
 
   Color _parseColor(String? hex) {
@@ -198,14 +199,16 @@ class _ContentPlayerState extends State<ContentPlayer> {
   }
 }
 
-// --- Sub Widgets (Video, Webview, Ticker) คงเดิม ---
-// (Copy ส่วน _VideoItem, _WebviewItem, _TickerItem จากไฟล์เดิมมาแปะต่อตรงนี้ได้เลยครับ เพื่อความกระชับ)
+// --- Sub Widgets ---
+
 class _VideoItem extends StatefulWidget {
   final File? file;
   final String url;
   final bool isLooping;
   final VoidCallback onFinished;
+
   const _VideoItem({super.key, this.file, required this.url, required this.isLooping, required this.onFinished});
+
   @override
   State<_VideoItem> createState() => _VideoItemState();
 }
