@@ -3,17 +3,20 @@ import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'pages/loading_page.dart';
 
+// [NEW] Global Key สำหรับเรียก Dialog จาก Service
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // [NEW] Load .env
   try {
     await dotenv.load(fileName: ".env");
-  } catch (_) {}
+  } catch (e) {
+    print("Error loading .env: $e");
+  }
   
-  // [เพิ่ม] ซ่อน Status Bar และ Navigation Bar (Full Screen)
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-  
-  // บังคับแนวนอน
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
@@ -28,9 +31,10 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey, // [NEW] ผูก Key
       debugShowCheckedModeBanner: false,
       title: 'Signage Player',
-      theme: ThemeData.dark(), // ใช้ Dark theme เพื่อให้พื้นหลังดำสนิท
+      theme: ThemeData.dark(),
       home: const LoadingPage(),
     );
   }

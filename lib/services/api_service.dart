@@ -1,54 +1,53 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
 import '../models/layout_model.dart';
+import 'base_http_service.dart'; // [NEW]
 
 class ApiService {
-  final String baseUrl;
+  // ไม่ต้องรับ baseUrl ใน constructor แล้ว เพราะ BaseHttpService จัดการให้
+  // แต่อาจจะเก็บไว้ถ้าโค้ดเก่ามีการส่งค่ามา แต่เราจะไม่ใช้มัน
+  ApiService([String? _]); 
 
-  ApiService(this.baseUrl);
-
-  // [NEW] ดึง Config ของรถตาม Device ID
-  // จะคืนค่า Map เช่น { "id": 1, "name": "Layout A" } หรือ Error ถ้าไม่เจอ
   Future<Map<String, dynamic>> fetchBusConfig(String deviceId) async {
     try {
-      final response = await http.get(Uri.parse('$baseUrl/bus/device/$deviceId'));
-      print('baseUrl ============================== : $baseUrl');
-      print('deviceId ============================== : $deviceId');
+      // ใช้ BaseHttpService.get แทน
+      final response = await BaseHttpService.get('/bus/device/$deviceId');
+      return jsonDecode(response.body);
       
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      } else if (response.statusCode == 404) {
-        throw Exception('Bus Device ID not registered in system');
-      } else {
-        throw Exception('Server Error: ${response.statusCode}');
-      }
+      // *หมายเหตุ: BaseHttpService จัดการ statusCode check ให้แล้วในระดับหนึ่ง
+      // แต่ถ้าต้องการ Handle 404 เฉพาะจุด อาจต้อง try-catch เพิ่มเติม
     } catch (e) {
-      throw Exception('Connection failed: $e');
+      throw Exception('Failed to fetch bus config: $e');
     }
   }
 
-  // [2] ดึง Layout
   Future<SignageLayout> fetchLayoutById(String id) async {
-    final response = await http.get(Uri.parse('$baseUrl/layouts/$id'));
-    if (response.statusCode == 200) {
+    try {
+      final response = await BaseHttpService.get('/layouts/$id');
       return SignageLayout.fromJson(jsonDecode(response.body));
+    } catch (e) {
+       throw Exception('Error fetching layout: $e');
     }
-    throw Exception('Failed to load layout');
   }
 
-  // [3] [NEW] รายงานผลกลับไป Server (ว่าเล่น Version ไหนอยู่)
   Future<void> updateBusStatus(int busId, int activeVersion) async {
     try {
-      // สมมติ Backend มี Route: PUT /api/buses/:id/ack
-      // body: { "version": 123 }
-      await http.put(
-        Uri.parse('$baseUrl/bus/$busId/ack'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'version': activeVersion}),
+      await BaseHttpService.put(
+        '/bus/$busId/ack',
+        {'version': activeVersion},
       );
       print("✅ Reported status: Bus $busId is on version $activeVersion");
     } catch (e) {
       print("⚠️ Failed to report status: $e");
+    }
+  }
+
+  Future<List<SignageLayout>> fetchLayouts() async {
+    try {
+      final response = await BaseHttpService.get('/layouts');
+      final List<dynamic> data = jsonDecode(response.body);
+      return data.map((e) => SignageLayout.fromJson(e)).toList();
+    } catch (e) {
+      throw e;
     }
   }
 }
