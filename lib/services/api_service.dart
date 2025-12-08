@@ -27,7 +27,7 @@ class ApiService {
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
       } else if (response.statusCode == 404) {
-        throw Exception('Bus Device ID not registered in system');
+        throw Exception('Bus Device ID not registered in system Your Device ID: $deviceId');
       } else {
         throw Exception('Server Error: ${response.statusCode}');
       }
