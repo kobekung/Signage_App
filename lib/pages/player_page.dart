@@ -57,7 +57,7 @@ class _PlayerPageState extends State<PlayerPage> {
     _checkBusLocation(); 
 
     // 2. Check Update (5m)
-    _updateCheckTimer = Timer.periodic(const Duration(seconds: 10), (_) => _checkForLayoutUpdate());
+    _updateCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) => _checkForLayoutUpdate());
   }
 
   @override
