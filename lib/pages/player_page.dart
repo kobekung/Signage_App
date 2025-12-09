@@ -161,7 +161,7 @@ class _PlayerPageState extends State<PlayerPage> {
         setState(() => _isDownloadingUpdate = true);
         
         final newLayout = await api.fetchLayoutById(serverLayoutId.toString());
-        await PreloadService.preloadAssets(newLayout, (_,__,___){});
+        await PreloadService.manageAssets(newLayout, (_,__,___){});
         
         await prefs.setString('cached_layout_id', serverLayoutId.toString());
         await prefs.setInt('cached_layout_version', serverVersion);

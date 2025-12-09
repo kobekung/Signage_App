@@ -36,6 +36,7 @@ dependencies:
   flutter_secure_storage: ^9.0.0 # [NEW]
   awesome_dialog: ^3.2.1 # [NEW]
   path_provider: ^2.1.2
+  flutter_vlc_player: ^7.4.1
   
   # Media
   video_player: ^2.8.2

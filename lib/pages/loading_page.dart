@@ -105,7 +105,7 @@ class _LoadingPageState extends State<LoadingPage> {
         setState(() => _status = "Updating Content (v$serverVersion)...");
         layout = await api.fetchLayoutById(serverLayoutId.toString());
         
-        await PreloadService.preloadAssets(layout, (file, current, total) {
+        await PreloadService.manageAssets(layout, (file, current, total) {
           if(mounted) setState(() {
             _status = "Downloading $current/$total";
             _progress = total > 0 ? current / total : 0;
