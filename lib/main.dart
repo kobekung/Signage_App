@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'pages/loading_page.dart';
+import 'package:media_kit/media_kit.dart'; // [Import]
 
 // [NEW] Global Key สำหรับเรียก Dialog จาก Service
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   
   // [NEW] Load .env
   try {

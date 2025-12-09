@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_vlc_player/flutter_vlc_player.dart';
+import 'package:media_kit/media_kit.dart';               // [Import Core]
+import 'package:media_kit_video/media_kit_video.dart';   // [Import Video Widget]
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/layout_model.dart';
 import '../services/preload_service.dart';
@@ -95,15 +96,15 @@ class _ContentPlayerState extends State<ContentPlayer> {
 
     Widget content;
 
-    // --- VIDEO (VLC) ---
+    // --- VIDEO (MEDIA KIT) ---
     if (type == 'video') {
       final url = item['url'];
       File? cachedFile = await PreloadService.getCachedFile(url);
       
       bool shouldLoop = !widget.isTriggerMode && _playlist.length == 1;
 
-      content = _VideoItem(
-        key: ValueKey("$url-$_currentIndex"), 
+      content = _MediaKitVideoItem(
+        key: ValueKey("$url-$_currentIndex"), // เปลี่ยน Key เพื่อเริ่มเล่นใหม่เสมอ
         file: cachedFile, 
         url: url,
         isLooping: shouldLoop, 
@@ -190,21 +191,39 @@ class _ContentPlayerState extends State<ContentPlayer> {
     return Container(
       width: double.infinity,
       height: double.infinity,
-      child: _currentContent ?? const SizedBox(),
+      color: Colors.black, // พื้นหลังดำกันภาพกระพริบ
+      child: AnimatedSwitcher(
+        // ตั้งเวลาเฟด (800ms) ให้เนียนตา
+        duration: const Duration(milliseconds: 800),
+        layoutBuilder: (currentChild, previousChildren) {
+          return Stack(
+            fit: StackFit.expand,
+            alignment: Alignment.center,
+            children: [
+              ...previousChildren, // ภาพเก่าค้างไว้ด้านหลัง
+              if (currentChild != null) currentChild, // ภาพใหม่เฟดทับ
+            ],
+          );
+        },
+        transitionBuilder: (Widget child, Animation<double> animation) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        child: _currentContent ?? const SizedBox(),
+      ),
     );
   }
 }
 
-// --- Sub Widgets ---
-
-// [UPDATED] VLC Video Item with "Deep Debugging" Info
-class _VideoItem extends StatefulWidget {
+// ==========================================
+// 📽️ MediaKit Video Player Widget (Updated)
+// ==========================================
+class _MediaKitVideoItem extends StatefulWidget {
   final File? file;
   final String url;
   final bool isLooping;
   final VoidCallback onFinished;
 
-  const _VideoItem({
+  const _MediaKitVideoItem({
     super.key, 
     this.file, 
     required this.url, 
@@ -213,225 +232,90 @@ class _VideoItem extends StatefulWidget {
   });
 
   @override
-  State<_VideoItem> createState() => _VideoItemState();
+  State<_MediaKitVideoItem> createState() => _MediaKitVideoItemState();
 }
 
-class _VideoItemState extends State<_VideoItem> {
-  late VlcPlayerController _videoPlayerController;
-  bool _isInitialized = false;
-  String? _errorMessage;
-  Timer? _timeoutTimer;
+class _MediaKitVideoItemState extends State<_MediaKitVideoItem> {
+  late final Player player = Player();
+  late final VideoController controller = VideoController(player);
   
-  // ตัวแปรสำหรับ Debug
-  double _bufferPercent = 0.0;
-  String _currentState = "Initializing...";
-  int _retryCount = 0;
+  // ใช้คุม Opacity แทนการซ่อน Widget
+  bool _isVideoReady = false; 
 
   @override
   void initState() {
     super.initState();
-    _initVlcPlayer();
+    _initPlayer();
   }
 
-  void _initVlcPlayer() {
-    String path = widget.file != null ? widget.file!.path : widget.url;
-    
-    _videoPlayerController = VlcPlayerController.network(
-      path, 
-      hwAcc: HwAcc.disabled, // Software Decode (เสถียรสุดสำหรับ Android Box)
-      autoPlay: true,
-      options: VlcPlayerOptions(
-        advanced: VlcAdvancedOptions([
-          VlcAdvancedOptions.networkCaching(2000), // Buffer 2000ms (2 วิ)
-        ]),
-        video: VlcVideoOptions([
-          VlcVideoOptions.dropLateFrames(true), 
-        ]),
-        // http: VlcHttpOptions([
-        //   VlcHttpOptions.reconnect(true), // พยายามต่อใหม่ถ้าหลุด
-        // ]),
-      ),
-    );
+  Future<void> _initPlayer() async {
+    try {
+      final Media media = widget.file != null 
+          ? Media(widget.file!.path) 
+          : Media(widget.url);
 
-    _videoPlayerController.addListener(_onVideoStateChanged);
+      // เปิดไฟล์
+      await player.open(media, play: true);
+      await player.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
 
-    // Timeout 30 วินาที (เผื่อเน็ตช้า)
-    _timeoutTimer = Timer(const Duration(seconds: 30), () {
-      if (mounted && !_isInitialized) {
-        _showError("Timeout: 30s passed. Still not playing.\nBuffer: ${_bufferPercent.toStringAsFixed(1)}%");
-      }
-    });
-  }
-
-  void _onVideoStateChanged() async {
-    if (!mounted) return;
-
-    // 1. ดึงค่าสถานะปัจจุบันมาโชว์
-    final state = _videoPlayerController.value.playingState;
-    final buffer = _videoPlayerController.value.bufferPercent; // VLC ส่งค่า 0-100 มาให้
-
-    setState(() {
-      _currentState = state.toString().split('.').last; // เช่น Buffering, Playing
-      _bufferPercent = buffer;
-    });
-
-    // 2. ถ้าเริ่มเล่นได้แล้ว (Playing)
-    if (!_isInitialized && _videoPlayerController.value.isPlaying) {
-      _timeoutTimer?.cancel();
-      setState(() {
-        _isInitialized = true;
+      // 1. รอ Event ขนาดวิดีโอ เพื่อบอกว่าพร้อมแสดงผล
+      player.stream.videoParams.listen((params) {
+        if (params.w != null && params.h != null && !_isVideoReady) {
+          if (mounted) setState(() => _isVideoReady = true);
+        }
       });
+
+      // 2. Fallback: ถ้า 1 วินาทีแล้วภาพยังไม่มา ให้บังคับโชว์เลย (กันจอดำ)
+      Future.delayed(const Duration(milliseconds: 1000), () {
+        if (mounted && !_isVideoReady) {
+           print("⚠️ Video rendering fallback triggered");
+           setState(() => _isVideoReady = true);
+        }
+      });
+
+      // Event จบ
+      player.stream.completed.listen((isCompleted) {
+        if (isCompleted && !widget.isLooping) {
+          widget.onFinished();
+        }
+      });
+
+      // Event Error
+      player.stream.error.listen((error) {
+        print("❌ MediaKit Error: $error");
+        Future.delayed(const Duration(seconds: 5), widget.onFinished);
+      });
+
+    } catch (e) {
+      print("Init Error: $e");
+      widget.onFinished();
     }
-
-    // 3. เช็คจบ
-    if (_videoPlayerController.value.isEnded) {
-      if (widget.isLooping) {
-        await _videoPlayerController.seekTo(Duration.zero);
-        await _videoPlayerController.play();
-      } else {
-        _cleanupAndFinish();
-      }
-    }
-
-    // 4. เช็ค Error
-    if (_videoPlayerController.value.hasError) {
-      _timeoutTimer?.cancel();
-      _showError("VLC Error: ${_videoPlayerController.value.errorDescription}");
-    }
-  }
-
-  void _showError(String msg) {
-    if (!mounted) return;
-    print("❌ Video Error: $msg");
-    setState(() {
-      _errorMessage = msg;
-    });
-
-    // ค้างหน้า Error ไว้ 5 วิ แล้วข้าม
-    Future.delayed(const Duration(seconds: 5), () {
-      if (mounted) _cleanupAndFinish();
-    });
-  }
-
-  void _cleanupAndFinish() {
-    _videoPlayerController.removeListener(_onVideoStateChanged);
-    widget.onFinished();
   }
 
   @override
   void dispose() {
-    _timeoutTimer?.cancel();
-    try {
-      _videoPlayerController.removeListener(_onVideoStateChanged);
-      _videoPlayerController.stopRendererScanning();
-      _videoPlayerController.dispose();
-    } catch (_) {}
+    player.dispose(); // คืน Memory
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // ------------------------------------
-    // 1. กรณี Error
-    // ------------------------------------
-    if (_errorMessage != null) {
-      return Container(
-        color: Colors.black,
-        width: double.infinity,
-        height: double.infinity,
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, color: Colors.red, size: 60),
-            const SizedBox(height: 20),
-            Text(_errorMessage!, 
-              textAlign: TextAlign.center, 
-              style: const TextStyle(color: Colors.white, fontSize: 16)
-            ),
-            const SizedBox(height: 20),
-            const LinearProgressIndicator(color: Colors.red),
-            const SizedBox(height: 10),
-            const Text("Skipping...", style: TextStyle(color: Colors.white54)),
-          ],
-        ),
-      );
-    }
-
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        // ------------------------------------
-        // 2. Player
-        // ------------------------------------
-        VlcPlayer(
-          controller: _videoPlayerController,
-          aspectRatio: 16 / 9,
-          placeholder: const Center(child: CircularProgressIndicator()),
-        ),
-        
-        // ------------------------------------
-        // 3. Loading & Debug Info (โชว์จนกว่าจะเริ่มเล่น)
-        // ------------------------------------
-        if (!_isInitialized)
-          Container(
-            color: Colors.black87, // ดำเข้มๆ ให้อ่านง่าย
-            width: double.infinity,
-            height: double.infinity,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const CircularProgressIndicator(color: Colors.white),
-                const SizedBox(height: 20),
-                
-                // --- ส่วนสำคัญ: ข้อมูล Debug ---
-                Text(
-                  "Status: $_currentState", // เช่น Buffering, Opening
-                  style: const TextStyle(color: Colors.greenAccent, fontSize: 20, fontWeight: FontWeight.bold)
-                ),
-                const SizedBox(height: 10),
-                
-                // หลอด Buffer
-                SizedBox(
-                  width: 200,
-                  child: LinearProgressIndicator(
-                    value: _bufferPercent / 100, // แปลง 0-100 เป็น 0.0-1.0
-                    backgroundColor: Colors.grey,
-                    color: Colors.blue,
-                    minHeight: 10,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  "Buffering: ${_bufferPercent.toStringAsFixed(1)}%",
-                  style: const TextStyle(color: Colors.white, fontSize: 16)
-                ),
-                
-                const SizedBox(height: 20),
-                // โชว์ URL เผื่อพิมพ์ผิด (ตัดให้สั้นหน่อยจะได้ไม่รก)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: Text(
-                    "Source: ...${widget.url.substring(widget.url.length > 30 ? widget.url.length - 30 : 0)}",
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                ),
-                
-                const SizedBox(height: 30),
-                OutlinedButton.icon(
-                  onPressed: _cleanupAndFinish,
-                  icon: const Icon(Icons.skip_next, color: Colors.white),
-                  label: const Text("Force Skip", style: TextStyle(color: Colors.white)),
-                  style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white54)),
-                )
-              ],
-            ),
-          ),
-      ],
+    // ใช้วิธีเฟด Opacity แทนการไม่สร้าง Widget
+    // เพื่อให้ Texture ทำงานเบื้องหลังได้ตลอดเวลา
+    return AnimatedOpacity(
+      opacity: _isVideoReady ? 1.0 : 0.0, 
+      duration: const Duration(milliseconds: 500), 
+      child: Video(
+        controller: controller,
+        fit: BoxFit.cover,
+        controls: NoVideoControls,
+        fill: Colors.transparent, // พื้นหลังใสให้เห็นภาพเก่าซ้อนได้
+      ),
     );
   }
 }
+
+// --- Sub Widgets ---
 
 class _WebviewItem extends StatefulWidget {
   final String url;
