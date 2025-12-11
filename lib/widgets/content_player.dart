@@ -1,17 +1,17 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:media_kit/media_kit.dart';               // [Import Core]
-import 'package:media_kit_video/media_kit_video.dart';   // [Import Video Widget]
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/layout_model.dart';
 import '../services/preload_service.dart';
 
 class ContentPlayer extends StatefulWidget {
   final SignageWidget widget;
-  final VoidCallback? onFinished; // เรียกเมื่อเล่นจบ (สำหรับ Trigger Mode)
-  final bool isTriggerMode;       // บอกว่าเป็นโหมดแทรกคิว
-  final Function(bool isFullscreen)? onFullscreenChange; // บอกแม่ว่าตอนนี้ต้องเต็มจอไหม
+  final VoidCallback? onFinished; 
+  final bool isTriggerMode;       
+  final Function(bool isFullscreen)? onFullscreenChange; 
 
   const ContentPlayer({
     super.key, 
@@ -46,7 +46,6 @@ class _ContentPlayerState extends State<ContentPlayer> {
   void _initPlaylist() {
     final props = widget.widget.properties;
     
-    // แปลง Props ให้เป็น List เสมอ
     if (props['playlist'] != null && (props['playlist'] as List).isNotEmpty) {
       _playlist = List.from(props['playlist']);
     } else if (props['url'] != null || props['text'] != null) {
@@ -74,13 +73,12 @@ class _ContentPlayerState extends State<ContentPlayer> {
         widget.onFinished!(); // จบงาน Trigger
         return; 
       } else {
-        _currentIndex = 0; // วนลูปสำหรับโหมดปกติ
+        _currentIndex = 0; // วนลูปกลับไปเริ่มใหม่
       }
     }
 
     final item = _playlist[_currentIndex];
     
-    // แจ้งแม่เรื่อง Fullscreen
     final isFull = item['fullscreen'] == true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.onFullscreenChange != null && mounted) {
@@ -104,7 +102,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
       bool shouldLoop = !widget.isTriggerMode && _playlist.length == 1;
 
       content = _MediaKitVideoItem(
-        key: ValueKey("$url-$_currentIndex"), // เปลี่ยน Key เพื่อเริ่มเล่นใหม่เสมอ
+        key: ValueKey("$url-$_currentIndex"), 
         file: cachedFile, 
         url: url,
         isLooping: shouldLoop, 
@@ -130,8 +128,11 @@ class _ContentPlayerState extends State<ContentPlayer> {
     else if (type == 'webview') {
       final url = item['url'] ?? 'https://google.com';
       content = _WebviewItem(url: url);
+      
       if (widget.isTriggerMode) {
          _timer = Timer(const Duration(seconds: 15), () => widget.onFinished?.call());
+      } else if (_playlist.length > 1) {
+         _timer = Timer(const Duration(seconds: 15), () => _nextItem());
       }
     }
     // --- TICKER ---
@@ -144,6 +145,8 @@ class _ContentPlayerState extends State<ContentPlayer> {
       );
        if (widget.isTriggerMode) {
          _timer = Timer(const Duration(seconds: 15), () => widget.onFinished?.call());
+       } else if (_playlist.length > 1) {
+         _timer = Timer(const Duration(seconds: 15), () => _nextItem());
        }
     }
     // --- TEXT ---
@@ -158,6 +161,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
           ),
         ),
       );
+      
       if (widget.isTriggerMode) {
          _timer = Timer(Duration(seconds: duration), () => widget.onFinished?.call());
       } else if (_playlist.length > 1) {
@@ -191,17 +195,16 @@ class _ContentPlayerState extends State<ContentPlayer> {
     return Container(
       width: double.infinity,
       height: double.infinity,
-      color: Colors.black, // พื้นหลังดำกันภาพกระพริบ
+      color: Colors.black, 
       child: AnimatedSwitcher(
-        // ตั้งเวลาเฟด (800ms) ให้เนียนตา
         duration: const Duration(milliseconds: 800),
         layoutBuilder: (currentChild, previousChildren) {
           return Stack(
             fit: StackFit.expand,
             alignment: Alignment.center,
             children: [
-              ...previousChildren, // ภาพเก่าค้างไว้ด้านหลัง
-              if (currentChild != null) currentChild, // ภาพใหม่เฟดทับ
+              ...previousChildren, 
+              if (currentChild != null) currentChild,
             ],
           );
         },
@@ -215,7 +218,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
 }
 
 // ==========================================
-// 📽️ MediaKit Video Player Widget (Updated)
+// 📽️ MediaKit Video Player Widget (Fixed Freeze Issue)
 // ==========================================
 class _MediaKitVideoItem extends StatefulWidget {
   final File? file;
@@ -235,17 +238,41 @@ class _MediaKitVideoItem extends StatefulWidget {
   State<_MediaKitVideoItem> createState() => _MediaKitVideoItemState();
 }
 
-class _MediaKitVideoItemState extends State<_MediaKitVideoItem> {
+// [FIX] เพิ่ม WidgetsBindingObserver เพื่อดักจับสถานะแอป
+class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBindingObserver {
   late final Player player = Player();
   late final VideoController controller = VideoController(player);
   
-  // ใช้คุม Opacity แทนการซ่อน Widget
   bool _isVideoReady = false; 
 
   @override
   void initState() {
     super.initState();
+    // [FIX] ลงทะเบียน Observer
+    WidgetsBinding.instance.addObserver(this);
     _initPlayer();
+  }
+
+  @override
+  void dispose() {
+    // [FIX] ยกเลิก Observer
+    WidgetsBinding.instance.removeObserver(this);
+    player.dispose(); 
+    super.dispose();
+  }
+
+  // [FIX] ฟังก์ชันป้องกันวิดีโอหยุดเมื่อมี Pop-up หรือ System Dialog
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    
+    // ถ้าแอปเป็น Inactive (มี Pop-up บัง) หรือ Paused ให้บังคับเล่นต่อ
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      if (!player.state.playing) {
+         print("⚠️ App Inactive/Paused: Forcing video playback...");
+         player.play();
+      }
+    }
   }
 
   Future<void> _initPlayer() async {
@@ -254,33 +281,27 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> {
           ? Media(widget.file!.path) 
           : Media(widget.url);
 
-      // เปิดไฟล์
       await player.open(media, play: true);
       await player.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
 
-      // 1. รอ Event ขนาดวิดีโอ เพื่อบอกว่าพร้อมแสดงผล
       player.stream.videoParams.listen((params) {
         if (params.w != null && params.h != null && !_isVideoReady) {
           if (mounted) setState(() => _isVideoReady = true);
         }
       });
 
-      // 2. Fallback: ถ้า 1 วินาทีแล้วภาพยังไม่มา ให้บังคับโชว์เลย (กันจอดำ)
       Future.delayed(const Duration(milliseconds: 1000), () {
         if (mounted && !_isVideoReady) {
-           print("⚠️ Video rendering fallback triggered");
            setState(() => _isVideoReady = true);
         }
       });
 
-      // Event จบ
       player.stream.completed.listen((isCompleted) {
         if (isCompleted && !widget.isLooping) {
           widget.onFinished();
         }
       });
 
-      // Event Error
       player.stream.error.listen((error) {
         print("❌ MediaKit Error: $error");
         Future.delayed(const Duration(seconds: 5), widget.onFinished);
@@ -293,15 +314,7 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> {
   }
 
   @override
-  void dispose() {
-    player.dispose(); // คืน Memory
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    // ใช้วิธีเฟด Opacity แทนการไม่สร้าง Widget
-    // เพื่อให้ Texture ทำงานเบื้องหลังได้ตลอดเวลา
     return AnimatedOpacity(
       opacity: _isVideoReady ? 1.0 : 0.0, 
       duration: const Duration(milliseconds: 500), 
@@ -309,13 +322,13 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> {
         controller: controller,
         fit: BoxFit.cover,
         controls: NoVideoControls,
-        fill: Colors.transparent, // พื้นหลังใสให้เห็นภาพเก่าซ้อนได้
+        fill: Colors.transparent,
       ),
     );
   }
 }
 
-// --- Sub Widgets ---
+// --- Sub Widgets (คงเดิม) ---
 
 class _WebviewItem extends StatefulWidget {
   final String url;

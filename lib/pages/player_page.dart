@@ -32,31 +32,29 @@ class PlayerPage extends StatefulWidget {
 class _PlayerPageState extends State<PlayerPage> {
   bool _showControls = false;
 
-  // Location Trigger State
+  // Location Override State
   Timer? _locationPollTimer;
-  int? _lastLocationId;
-  Map<String, dynamic> _activeInPlaceTriggers = {}; 
-  SignageWidget? _activeFullscreenWidget; 
+  String? _currentLocationId; 
+  
+  // [UPDATED] เปลี่ยน Value เป็น List เพื่อรองรับหลาย Item
+  Map<String, List<dynamic>> _activeLocationOverrides = {}; 
+  SignageWidget? _activeFullscreenOverride; 
 
-  // Auto Update State
   Timer? _updateCheckTimer;
   bool _isDownloadingUpdate = false;
-
-  // Normal Playlist Fullscreen State
   String? _playlistFullscreenId;
 
   String get _busApiUrl => 'https://public.bussing.app/bus-info/busround-active?busno=${widget.busId}&com_id=${widget.companyId}';
+  // String get _busApiUrl => 'https://public.bussing.app/bus-info/busround-active?busno=10&com_id=4';
 
   @override
   void initState() {
     super.initState();
     print("🚀 Player Start: Bus ${widget.busId}, Com ${widget.companyId}");
     
-    // 1. Check Location (30s)
     _locationPollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkBusLocation());
     _checkBusLocation(); 
 
-    // 2. Check Update (5m)
     _updateCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) => _checkForLayoutUpdate());
   }
 
@@ -68,7 +66,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   // ============================
-  // 1. Location Trigger Logic
+  // 1. Location Logic (Updated for Multiple Items)
   // ============================
   Future<void> _checkBusLocation() async {
     try {
@@ -76,12 +74,13 @@ class _PlayerPageState extends State<PlayerPage> {
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body);
         if (json['status'] == true && json['data'] != null) {
-          final locationId = json['data']['busround_location_now_id'];
+          final locationIdRaw = json['data']['busround_location_now_id'];
+          final locationId = locationIdRaw?.toString();
           
-          if (locationId != null && locationId != _lastLocationId) {
-            print("📍 Bus Location Change: $locationId");
-            _lastLocationId = locationId;
-            _findAndTriggerContent(locationId.toString());
+          if (locationId != _currentLocationId) {
+            print("📍 Location Changed: $_currentLocationId -> $locationId");
+            _currentLocationId = locationId;
+            _updateContentForLocation(locationId);
           }
         }
       }
@@ -90,54 +89,60 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  void _findAndTriggerContent(String locationId) {
-    Map<String, dynamic> newInPlaceTriggers = {};
-    SignageWidget? newFullscreenWidget;
+  void _updateContentForLocation(String? locationId) {
+    Map<String, List<dynamic>> newOverrides = {};
+    SignageWidget? newFullscreen;
 
-    for (final widget in widget.layout.widgets) {
-      final props = widget.properties;
-      if (props['playlist'] is List) {
-        final playlist = props['playlist'] as List;
-        final matchItem = playlist.firstWhere(
-          (item) => item['locationId'].toString() == locationId, 
-          orElse: () => null
-        );
-
-        if (matchItem != null) {
-          print("✨ Trigger! Widget: ${widget.id}, Fullscreen: ${matchItem['fullscreen']}");
+    if (locationId != null) {
+      for (final widget in widget.layout.widgets) {
+        final props = widget.properties;
+        if (props['playlist'] is List) {
+          final playlist = props['playlist'] as List;
           
-          if (matchItem['fullscreen'] == true) {
-             newFullscreenWidget = SignageWidget(
-                id: "trigger-full-${DateTime.now().millisecondsSinceEpoch}",
-                type: widget.type,
-                x: 0, y: 0, width: 0, height: 0,
-                properties: { ...props, 'playlist': [matchItem], 'url': null }
-             );
-          } else {
-            newInPlaceTriggers[widget.id] = matchItem;
+          // [FIX] ใช้ where เพื่อดึง "ทุกตัว" ที่ตรงกับ Location นี้ (ไม่ใช่แค่ตัวแรก)
+          final matchItems = playlist.where(
+            (item) => item['locationId'].toString() == locationId
+          ).toList();
+
+          if (matchItems.isNotEmpty) {
+            print("✨ Location Match! Widget: ${widget.id}, Items: ${matchItems.length}");
+            
+            // แยกกรณี Fullscreen กับ In-Place
+            final fullscreenItems = matchItems.where((i) => i['fullscreen'] == true).toList();
+            final normalItems = matchItems.where((i) => i['fullscreen'] != true).toList();
+
+            // ถ้ามีรายการที่เป็น Fullscreen ให้สร้าง Widget ครอบ
+            if (fullscreenItems.isNotEmpty) {
+               newFullscreen = SignageWidget(
+                  id: "loc-full-$locationId", 
+                  type: widget.type,
+                  x: 0, y: 0, width: 0, height: 0,
+                  // ส่ง playlist เป็น List ของ items ทั้งหมดที่เจอ
+                  properties: { ...props, 'playlist': fullscreenItems, 'url': null }
+               );
+            }
+            
+            // ถ้ามีรายการปกติ ให้เก็บลง Map ไว้ส่งให้ Renderer
+            if (normalItems.isNotEmpty) {
+              newOverrides[widget.id] = normalItems;
+            }
           }
         }
       }
+    } else {
+      print("❌ Location Exited: Back to normal playlist");
     }
 
     if (mounted) {
       setState(() {
-        _activeInPlaceTriggers = newInPlaceTriggers;
-        _activeFullscreenWidget = newFullscreenWidget;
+        _activeLocationOverrides = newOverrides;
+        _activeFullscreenOverride = newFullscreen;
       });
     }
   }
 
-  void _onInPlaceFinished(String widgetId) {
-    if (mounted) setState(() => _activeInPlaceTriggers.remove(widgetId));
-  }
-
-  void _onFullscreenTriggerFinished() {
-    if (mounted) setState(() => _activeFullscreenWidget = null);
-  }
-
   // ============================
-  // 2. Auto Update Logic
+  // 2. Auto Update Logic (Same as before)
   // ============================
   Future<void> _checkForLayoutUpdate() async {
     if (_isDownloadingUpdate) return;
@@ -181,9 +186,6 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // ============================
-  // 3. Playlist Fullscreen Logic
-  // ============================
   void _handleWidgetFullscreen(String widgetId, bool isFull) {
     if (isFull && _playlistFullscreenId != widgetId) {
       setState(() => _playlistFullscreenId = widgetId);
@@ -203,29 +205,25 @@ class _PlayerPageState extends State<PlayerPage> {
         },
         child: Stack(
           children: [
-            // Main Layout Renderer
             LayoutRenderer(
               layout: widget.layout,
-              inPlaceTriggers: _activeInPlaceTriggers,
-              onInPlaceFinished: _onInPlaceFinished,
+              locationOverrides: _activeLocationOverrides,
               fullscreenWidgetId: _playlistFullscreenId,
               onWidgetFullscreen: _handleWidgetFullscreen,
             ),
 
-            // Trigger Fullscreen Overlay
-            if (_activeFullscreenWidget != null)
+            if (_activeFullscreenOverride != null)
               Container(
                 color: Colors.black,
                 child: SizedBox.expand(
                   child: ContentPlayer(
-                    widget: _activeFullscreenWidget!,
-                    isTriggerMode: true,
-                    onFinished: _onFullscreenTriggerFinished,
+                    key: ValueKey("loc-full-${_currentLocationId}"), 
+                    widget: _activeFullscreenOverride!,
+                    isTriggerMode: false, // Loop playlist
                   ),
                 ),
               ),
 
-            // Close Button
             if (_showControls)
               Positioned(
                 top: 20, right: 20,
@@ -238,7 +236,6 @@ class _PlayerPageState extends State<PlayerPage> {
                 ),
               ),
               
-             // Update Loading Indicator
              if (_isDownloadingUpdate)
                Positioned(bottom: 10, left: 10, child: const CircularProgressIndicator(color: Colors.white))
           ],
