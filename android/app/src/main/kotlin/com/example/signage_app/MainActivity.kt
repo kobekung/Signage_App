@@ -1,6 +1,8 @@
 package com.example.signage_app
 
 import android.app.Activity
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
@@ -15,15 +17,30 @@ class MainActivity: FlutterActivity() {
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             if (call.method == "startKioskMode") {
-                startLockTask() // สั่งล็อคหน้าจอ (ปิดปุ่ม Home)
-                result.success(null)
+                try {
+                    // 1. รับตัวจัดการ Device Policy
+                    val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                    val adminComponent = ComponentName(this, AdminReceiver::class.java)
+
+                    // 2. เช็คว่าเป็น Device Owner หรือไม่
+                    if (dpm.isDeviceOwnerApp(packageName)) {
+                        // 3. อนุญาตให้แอปเราเข้า Lock Task ได้โดยไม่ต้องถาม
+                        dpm.setLockTaskPackages(adminComponent, arrayOf(packageName))
+                    }
+
+                    // 4. สั่งล็อคจอ (ตอนนี้จะไม่ถามแล้ว)
+                    startLockTask()
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("ERROR", "Cannot start kiosk mode: ${e.message}", null)
+                }
             } else if (call.method == "stopKioskMode") {
                 try {
-                    stopLockTask() // ปลดล็อคหน้าจอ
+                    stopLockTask()
+                    result.success(null)
                 } catch (e: Exception) {
-                    // กรณีไม่ได้ล็อคอยู่ อาจจะ error ได้ ก็ปล่อยผ่าน
+                    result.success(null)
                 }
-                result.success(null)
             } else {
                 result.notImplemented()
             }
