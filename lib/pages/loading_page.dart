@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart'; // [NEW] Import
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:qr_flutter/qr_flutter.dart'; // [1] เพิ่ม Import QR Code
 import '../models/layout_model.dart';
 import '../services/api_service.dart';
 import '../services/preload_service.dart';
@@ -19,6 +20,7 @@ class LoadingPage extends StatefulWidget {
 class _LoadingPageState extends State<LoadingPage> {
   String _status = "Initializing...";
   double _progress = 0.0;
+  String? _currentDeviceId; // [2] ตัวแปรเก็บ ID ไว้โชว์
   Timer? _retryTimer;
 
   @override
@@ -36,29 +38,19 @@ class _LoadingPageState extends State<LoadingPage> {
   Future<void> _start() async {
     final prefs = await SharedPreferences.getInstance();
     
-    // 1. ลองดึง URL จากเครื่อง
+    // ดึง URL
     String? url = prefs.getString('api_base_url');
-    
-    // [NEW] ถ้าไม่มีในเครื่อง ให้ดึงจาก .env แล้วบันทึกลงเครื่องเลย (Auto Setup)
     if (url == null || url.isEmpty) {
         url = dotenv.env['API_BASE_URL'];
         if (url != null && url.isNotEmpty) {
-            print("⚙️ Auto-Setup: Found URL in .env: $url");
             await prefs.setString('api_base_url', url);
         }
     }
     
-    // ดึง Device ID
+    // ดึง Device ID และเก็บใส่ตัวแปร State
     String deviceId = await DeviceUtil.getDeviceId();
-    // ถ้าได้ค่า 'unknown...' ให้ลองเอาจากที่เคยเซฟไว้ (เผื่อเครื่องมีปัญหาชั่วคราว)
-    if (deviceId.contains('unknown') || deviceId.contains('failed')) {
-         deviceId = prefs.getString('device_id') ?? deviceId;
-    } else {
-         // ถ้าได้ค่าจริง ให้บันทึกทับไปเลย
-         await prefs.setString('device_id', deviceId);
-    }
+    setState(() => _currentDeviceId = deviceId); // [3] อัปเดต ID เข้า State
 
-    // ถ้าสุดท้ายแล้วยังไม่มี URL (เช่น ลืมใส่ใน .env) ค่อยไปหน้า Setup
     if (url == null || url.isEmpty) {
       if(!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const SetupPage()));
@@ -67,70 +59,61 @@ class _LoadingPageState extends State<LoadingPage> {
 
     try {
       final api = ApiService(url);
-      setState(() => _status = "Connecting ($deviceId)...");
+      setState(() => _status = "Connecting...");
       
-      // 1. ดึง Config
+      // ดึง Config
       Map<String, dynamic> busConfig;
       try {
         busConfig = await api.fetchBusConfig(deviceId);
-        print("✅ Bus Config: $busConfig");
       } catch (e) {
-        print("Fetch Config Error: $e");
-        _playOfflineOrRetry("Connection Failed: $e");
+        // [4] ถ้า Error เช็คว่าเป็นเพราะไม่ได้ลงทะเบียนหรือไม่
+        if (e.toString().contains("not registered")) {
+           _playOfflineOrRetry("Device Not Registered", retrySeconds: 10);
+        } else {
+           _playOfflineOrRetry("Connection Failed: $e");
+        }
         return;
       }
 
+      // ... (ส่วน Logic เดิม: โหลด Layout ฯลฯ) ...
       final serverLayoutId = busConfig['layout_id'] ?? busConfig['id'];
       final int busId = int.tryParse(busConfig['bus_id'].toString()) ?? 0;
       final int companyId = int.tryParse(busConfig['company_id'].toString()) ?? 0;
       final serverVersion = int.tryParse(busConfig['layout_version'].toString()) ?? 1;
 
       if (serverLayoutId == null) {
-        // ยังไม่ผูก Layout -> รอ 15 วิ แล้วเช็คใหม่ (Auto Retry)
         setState(() => _status = "No layout assigned.\nWaiting for admin...");
         _retryTimer = Timer(const Duration(seconds: 15), _start);
         return;
       }
 
-      // 2. เปรียบเทียบ Cache
+      // ... (โค้ดส่วน Update Cache และ Preload เดิมคงไว้เหมือนเดิม) ...
       final String? localLayoutId = prefs.getString('cached_layout_id');
       final int localVersion = prefs.getInt('cached_layout_version') ?? 0;
-      
       bool needUpdate = (localLayoutId != serverLayoutId.toString()) || (serverVersion > localVersion);
-
       SignageLayout layout;
 
       if (needUpdate) {
-        // โหลดใหม่
         setState(() => _status = "Updating Content (v$serverVersion)...");
         layout = await api.fetchLayoutById(serverLayoutId.toString());
-        
         await PreloadService.manageAssets(layout, (file, current, total) {
           if(mounted) setState(() {
             _status = "Downloading $current/$total";
             _progress = total > 0 ? current / total : 0;
           });
         });
-
         await prefs.setString('cached_layout_id', serverLayoutId.toString());
         await prefs.setInt('cached_layout_version', serverVersion);
         await api.updateBusStatus(busId, serverVersion);
       } else {
-        // ของเดิม
         setState(() => _status = "Starting Player...");
         layout = await api.fetchLayoutById(serverLayoutId.toString());
       }
 
       if(!mounted) return;
-      
-      Navigator.pushReplacement(
-        context, 
-        MaterialPageRoute(builder: (_) => PlayerPage(
-          layout: layout,
-          busId: busId,
-          companyId: companyId
-        ))
-      );
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => PlayerPage(
+          layout: layout, busId: busId, companyId: companyId
+      )));
 
     } catch (e) {
        print("Critical Error: $e");
@@ -138,14 +121,16 @@ class _LoadingPageState extends State<LoadingPage> {
     }
   }
 
-  void _playOfflineOrRetry(String errorMsg) {
-    // สำหรับ TV: ให้ Auto Retry ตลอดไป
-    setState(() => _status = "Error: $errorMsg\nRetrying in 10s...");
-    _retryTimer = Timer(const Duration(seconds: 10), _start);
+  void _playOfflineOrRetry(String errorMsg, {int retrySeconds = 10}) {
+    setState(() => _status = "$errorMsg\nRetrying in ${retrySeconds}s...");
+    _retryTimer = Timer(Duration(seconds: retrySeconds), _start);
   }
 
   @override
   Widget build(BuildContext context) {
+    // [5] ตรวจสอบว่า Error เกี่ยวกับการลงทะเบียนหรือไม่ เพื่อแสดง QR
+    bool showQr = _status.contains("Not Registered") || _status.contains("not registered");
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -154,33 +139,55 @@ class _LoadingPageState extends State<LoadingPage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                CircularProgressIndicator(value: _progress > 0 ? _progress : null, color: Colors.white),
+                // ถ้าต้องแสดง QR ให้โชว์ QR แทน Loading
+                if (showQr && _currentDeviceId != null) ...[
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10)
+                    ),
+                    child: QrImageView(
+                      data: _currentDeviceId!,
+                      version: QrVersions.auto,
+                      size: 200.0,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  SelectableText(
+                    "ID: $_currentDeviceId",
+                    style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 10),
+                ] else ...[
+                  CircularProgressIndicator(value: _progress > 0 ? _progress : null, color: Colors.white),
+                ],
+
                 const SizedBox(height: 20),
                 Padding(
                   padding: const EdgeInsets.all(20.0),
                   child: Text(
                     _status, 
                     textAlign: TextAlign.center, 
-                    style: const TextStyle(color: Colors.white70)
+                    style: TextStyle(
+                      color: showQr ? Colors.redAccent : Colors.white70,
+                      fontSize: 16
+                    )
                   ),
                 ),
               ],
             ),
           ),
           
-          // [Hidden Button] ปุ่มลับสำหรับกดไปหน้า Setup (เผื่อเทส)
-          // แตะที่มุมขวาบนของจอ
+          // ปุ่มลับไปหน้า Setup (เหมือนเดิม)
           Positioned(
-            top: 0,
-            right: 0,
+            top: 0, right: 0,
             child: GestureDetector(
-              onDoubleTap: () => Navigator.pushReplacement(
-                  context, MaterialPageRoute(builder: (_) => const SetupPage())),
-              child: Container(
-                width: 80, 
-                height: 80, 
-                color: Colors.transparent, // มองไม่เห็น
-              ),
+              onDoubleTap: () {
+                 _retryTimer?.cancel();
+                 Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const SetupPage()));
+              },
+              child: Container(width: 80, height: 80, color: Colors.transparent),
             ),
           )
         ],

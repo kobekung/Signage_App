@@ -1,23 +1,33 @@
 // lib/utils/device_util.dart
-import 'dart:io';
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart'; // [Import]
 
 class DeviceUtil {
+  static const String _storageKey = 'app_unique_uuid';
+
   static Future<String> getDeviceId() async {
-    final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
     try {
-      if (Platform.isAndroid) {
-        AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
-        // ใช้ androidId เป็น ID หลัก (หรือไม่ก็ใช้ serial ถ้ามีสิทธิ์)
-        return androidInfo.id; 
-      } else if (Platform.isIOS) {
-        IosDeviceInfo iosInfo = await deviceInfo.iosInfo;
-        return iosInfo.identifierForVendor ?? 'unknown_ios';
+      final prefs = await SharedPreferences.getInstance();
+
+      // 1. ลองดึง ID เดิมก่อน
+      String? savedId = prefs.getString(_storageKey);
+      if (savedId != null && savedId.isNotEmpty) {
+        return savedId;
       }
-    } on PlatformException {
-      return 'failed_to_get_id';
+
+      // 2. ถ้าไม่มี -> สร้างใหม่ (UUID v4)
+      String newId = const Uuid().v4();
+      
+      // 3. บันทึกเก็บไว้
+      await prefs.setString(_storageKey, newId);
+      
+      print("🆕 Generated New UUID: $newId");
+      return newId;
+
+    } catch (e) {
+      // กันเหนียว: ถ้า Error จริงๆ ให้ return random ชั่วคราว
+      return 'error-${DateTime.now().millisecondsSinceEpoch}';
     }
-    return 'unknown_device';
   }
 }
