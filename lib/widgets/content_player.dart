@@ -239,8 +239,20 @@ class _MediaKitVideoItem extends StatefulWidget {
 }
 
 // [FIX] เพิ่ม WidgetsBindingObserver เพื่อดักจับสถานะแอป
+// ... (ส่วน import อื่นๆ เหมือนเดิม)
+
+// คลาส _MediaKitVideoItemState แก้ไขดังนี้
 class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBindingObserver {
-  late final Player player = Player();
+  // [PERFORMANCE] 1. เพิ่ม Configuration เพื่อลดอาการแลค
+  late final Player player = Player(
+    configuration: const PlayerConfiguration(
+      // เพิ่ม Buffer เป็น 32MB (ช่วยลดกระตุกเวลาอ่านไฟล์ไม่ทัน)
+      bufferSize: 32 * 1024 * 1024, 
+      // บังคับใช้ log level เพื่อดู error ถ้ามี
+      logLevel: MPVLogLevel.warn,
+    ),
+  );
+  
   late final VideoController controller = VideoController(player);
   
   bool _isVideoReady = false; 
@@ -248,28 +260,24 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBind
   @override
   void initState() {
     super.initState();
-    // [FIX] ลงทะเบียน Observer
     WidgetsBinding.instance.addObserver(this);
     _initPlayer();
   }
 
   @override
   void dispose() {
-    // [FIX] ยกเลิก Observer
     WidgetsBinding.instance.removeObserver(this);
+    // [FIX] ต้อง dispose player เสมอเพื่อคืน RAM
     player.dispose(); 
     super.dispose();
   }
 
-  // [FIX] ฟังก์ชันป้องกันวิดีโอหยุดเมื่อมี Pop-up หรือ System Dialog
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    
-    // ถ้าแอปเป็น Inactive (มี Pop-up บัง) หรือ Paused ให้บังคับเล่นต่อ
     if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
       if (!player.state.playing) {
-         print("⚠️ App Inactive/Paused: Forcing video playback...");
+         // บังคับเล่นต่อถ้าแอพโดนบัง
          player.play();
       }
     }
@@ -282,14 +290,22 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBind
           : Media(widget.url);
 
       await player.open(media, play: true);
+      
+      // [FIX AUDIO] 2. แก้ปัญหาเสียงไม่ออก
+      await player.setVolume(100.0); // บังคับเปิดเสียง 100%
+      await player.setAudioTrack(AudioTrack.auto()); // เลือก Track เสียงอัตโนมัติ
+
+      // [PERFORMANCE] 3. ตั้งค่า Loop แบบ Native เพื่อความลื่นไหล
       await player.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
 
       player.stream.videoParams.listen((params) {
+        // เช็คว่ามีภาพมาแล้วจริงๆ
         if (params.w != null && params.h != null && !_isVideoReady) {
           if (mounted) setState(() => _isVideoReady = true);
         }
       });
 
+      // Timeout กันเหนียว ถ้าโหลดนานเกิน 1 วิ ให้โชว์เลย (ป้องกันจอดำนาน)
       Future.delayed(const Duration(milliseconds: 1000), () {
         if (mounted && !_isVideoReady) {
            setState(() => _isVideoReady = true);
@@ -304,7 +320,8 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBind
 
       player.stream.error.listen((error) {
         print("❌ MediaKit Error: $error");
-        Future.delayed(const Duration(seconds: 5), widget.onFinished);
+        // ถ้า error ให้ข้ามไปไฟล์ถัดไปเลย
+        widget.onFinished();
       });
 
     } catch (e) {
@@ -316,13 +333,15 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBind
   @override
   Widget build(BuildContext context) {
     return AnimatedOpacity(
+      // ปรับเวลา Fade ให้เร็วขึ้นเล็กน้อยเพื่อให้รู้สึกทันใจขึ้น (จากเดิมอาจจะช้าไป)
       opacity: _isVideoReady ? 1.0 : 0.0, 
-      duration: const Duration(milliseconds: 500), 
+      duration: const Duration(milliseconds: 300), 
       child: Video(
         controller: controller,
         fit: BoxFit.cover,
         controls: NoVideoControls,
-        fill: Colors.transparent,
+        // ใช้สีดำแทน transparent เพื่อป้องกันภาพกระพริบ
+        fill: Colors.black, 
       ),
     );
   }

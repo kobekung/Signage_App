@@ -38,14 +38,14 @@ dependencies:
   path_provider: ^2.1.2
 
   # Media
-  flutter_vlc_player: ^7.4.1
+  # flutter_vlc_player: ^7.4.1
   media_kit: ^1.1.10
   media_kit_video: ^1.2.4
   media_kit_libs_android_video: ^1.2.2  # ตัวแปลงไฟล์สำหรับ Android
   
   # Media
-  video_player: ^2.8.2
-  chewie: ^1.7.1 # ช่วยให้เล่นวิดีโอง่ายขึ้น (Optional)
+  # video_player: ^2.8.2
+  # chewie: ^1.7.1 # ช่วยให้เล่นวิดีโอง่ายขึ้น (Optional)
   
   # Utilities
   crypto: ^3.0.3 # ไว้ hash ชื่อไฟล์
