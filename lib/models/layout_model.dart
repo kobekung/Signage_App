@@ -32,6 +32,19 @@ class SignageLayout {
       version: json['version'] ?? 1,
     );
   }
+
+  // [NEW] เพิ่ม toJson เพื่อบันทึกข้อมูลลงเครื่อง
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'width': width,
+      'height': height,
+      'background_color': backgroundColor,
+      'version': version,
+      'widgets': widgets.map((e) => e.toJson()).toList(),
+    };
+  }
 }
 
 class SignageWidget {
@@ -72,5 +85,18 @@ class SignageWidget {
       height: (json['height'] ?? 100).toDouble(),
       properties: props,
     );
+  }
+
+  // [NEW] เพิ่ม toJson
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'type': type,
+      'x': x,
+      'y': y,
+      'width': width,
+      'height': height,
+      'properties': properties,
+    };
   }
 }

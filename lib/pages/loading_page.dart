@@ -1,8 +1,9 @@
 import 'dart:async';
+import 'dart:convert'; // [NEW] เพิ่ม Import นี้
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:qr_flutter/qr_flutter.dart'; // [1] เพิ่ม Import QR Code
+import 'package:qr_flutter/qr_flutter.dart';
 import '../models/layout_model.dart';
 import '../services/api_service.dart';
 import '../services/preload_service.dart';
@@ -20,7 +21,7 @@ class LoadingPage extends StatefulWidget {
 class _LoadingPageState extends State<LoadingPage> {
   String _status = "Initializing...";
   double _progress = 0.0;
-  String? _currentDeviceId; // [2] ตัวแปรเก็บ ID ไว้โชว์
+  String? _currentDeviceId;
   Timer? _retryTimer;
 
   @override
@@ -35,6 +36,31 @@ class _LoadingPageState extends State<LoadingPage> {
     super.dispose();
   }
 
+  // [NEW] ฟังก์ชันสำหรับพยายามเล่นแบบ Offline
+  Future<bool> _tryPlayOffline() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final String? cachedJson = prefs.getString('cached_layout_json');
+      
+      if (cachedJson != null && cachedJson.isNotEmpty) {
+        setState(() => _status = "Offline Mode: Loading cached layout...");
+        print("⚠️ Network Error. Loading cached layout...");
+        
+        final layout = SignageLayout.fromJson(jsonDecode(cachedJson));
+        
+        if (!mounted) return false;
+        // กรณี Offline เราอาจจะไม่มี busId/companyId ล่าสุด ให้ใส่ 0 หรือค่า default ไปก่อน
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => PlayerPage(
+            layout: layout, busId: 0, companyId: 0
+        )));
+        return true;
+      }
+    } catch (e) {
+      print("❌ Failed to load offline layout: $e");
+    }
+    return false;
+  }
+
   Future<void> _start() async {
     final prefs = await SharedPreferences.getInstance();
     
@@ -47,9 +73,9 @@ class _LoadingPageState extends State<LoadingPage> {
         }
     }
     
-    // ดึง Device ID และเก็บใส่ตัวแปร State
+    // ดึง Device ID
     String deviceId = await DeviceUtil.getDeviceId();
-    setState(() => _currentDeviceId = deviceId); // [3] อัปเดต ID เข้า State
+    setState(() => _currentDeviceId = deviceId);
 
     if (url == null || url.isEmpty) {
       if(!mounted) return;
@@ -66,16 +92,19 @@ class _LoadingPageState extends State<LoadingPage> {
       try {
         busConfig = await api.fetchBusConfig(deviceId);
       } catch (e) {
-        // [4] ถ้า Error เช็คว่าเป็นเพราะไม่ได้ลงทะเบียนหรือไม่
+        // [MODIFIED] ถ้า Error ให้ลองเล่น Offline ก่อน
         if (e.toString().contains("not registered")) {
            _playOfflineOrRetry("Device Not Registered", retrySeconds: 10);
         } else {
-           _playOfflineOrRetry("Connection Failed: $e");
+           // ลองเล่น Offline ก่อน ถ้าไม่ได้ค่อย Retry
+           bool playedOffline = await _tryPlayOffline();
+           if (!playedOffline) {
+             _playOfflineOrRetry("Connection Failed: $e");
+           }
         }
         return;
       }
 
-      // ... (ส่วน Logic เดิม: โหลด Layout ฯลฯ) ...
       final serverLayoutId = busConfig['layout_id'] ?? busConfig['id'];
       final int busId = int.tryParse(busConfig['bus_id'].toString()) ?? 0;
       final int companyId = int.tryParse(busConfig['company_id'].toString()) ?? 0;
@@ -87,7 +116,6 @@ class _LoadingPageState extends State<LoadingPage> {
         return;
       }
 
-      // ... (โค้ดส่วน Update Cache และ Preload เดิมคงไว้เหมือนเดิม) ...
       final String? localLayoutId = prefs.getString('cached_layout_id');
       final int localVersion = prefs.getInt('cached_layout_version') ?? 0;
       bool needUpdate = (localLayoutId != serverLayoutId.toString()) || (serverVersion > localVersion);
@@ -102,12 +130,19 @@ class _LoadingPageState extends State<LoadingPage> {
             _progress = total > 0 ? current / total : 0;
           });
         });
+        
+        // Save Cache
         await prefs.setString('cached_layout_id', serverLayoutId.toString());
         await prefs.setInt('cached_layout_version', serverVersion);
+        await prefs.setString('cached_layout_json', jsonEncode(layout.toJson())); // [NEW] บันทึก Layout JSON
+        
         await api.updateBusStatus(busId, serverVersion);
       } else {
         setState(() => _status = "Starting Player...");
         layout = await api.fetchLayoutById(serverLayoutId.toString());
+        
+        // [NEW] บันทึก Layout JSON เผื่อไว้เสมอ (กรณี Cache เก่ายังไม่มี JSON)
+        await prefs.setString('cached_layout_json', jsonEncode(layout.toJson()));
       }
 
       if(!mounted) return;
@@ -117,7 +152,11 @@ class _LoadingPageState extends State<LoadingPage> {
 
     } catch (e) {
        print("Critical Error: $e");
-       _playOfflineOrRetry(e.toString());
+       // [MODIFIED] ลองเล่น Offline ในกรณี Error อื่นๆ
+       bool playedOffline = await _tryPlayOffline();
+       if (!playedOffline) {
+          _playOfflineOrRetry(e.toString());
+       }
     }
   }
 
@@ -128,7 +167,6 @@ class _LoadingPageState extends State<LoadingPage> {
 
   @override
   Widget build(BuildContext context) {
-    // [5] ตรวจสอบว่า Error เกี่ยวกับการลงทะเบียนหรือไม่ เพื่อแสดง QR
     bool showQr = _status.contains("Not Registered") || _status.contains("not registered");
 
     return Scaffold(
@@ -139,7 +177,6 @@ class _LoadingPageState extends State<LoadingPage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // ถ้าต้องแสดง QR ให้โชว์ QR แทน Loading
                 if (showQr && _currentDeviceId != null) ...[
                   Container(
                     padding: const EdgeInsets.all(10),
@@ -179,7 +216,6 @@ class _LoadingPageState extends State<LoadingPage> {
             ),
           ),
           
-          // ปุ่มลับไปหน้า Setup (เหมือนเดิม)
           Positioned(
             top: 0, right: 0,
             child: GestureDetector(
