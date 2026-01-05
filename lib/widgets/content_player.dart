@@ -1,3 +1,4 @@
+// lib/widgets/content_player.dart
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -67,18 +68,19 @@ class _ContentPlayerState extends State<ContentPlayer> {
     if (!mounted) return;
     _timer?.cancel();
 
-    // เช็คว่าเล่นจบ Playlist หรือยัง
+    // Loop logic
     if (_currentIndex >= _playlist.length) {
       if (widget.isTriggerMode && widget.onFinished != null) {
-        widget.onFinished!(); // จบงาน Trigger
+        widget.onFinished!(); 
         return; 
       } else {
-        _currentIndex = 0; // วนลูปกลับไปเริ่มใหม่
+        _currentIndex = 0; 
       }
     }
 
     final item = _playlist[_currentIndex];
     
+    // Fullscreen callback
     final isFull = item['fullscreen'] == true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.onFullscreenChange != null && mounted) {
@@ -94,7 +96,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
 
     Widget content;
 
-    // --- VIDEO (MEDIA KIT) ---
+    // --- VIDEO ---
     if (type == 'video') {
       final url = item['url'];
       File? cachedFile = await PreloadService.getCachedFile(url);
@@ -102,7 +104,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
       bool shouldLoop = !widget.isTriggerMode && _playlist.length == 1;
 
       content = _MediaKitVideoItem(
-        key: ValueKey("$url-$_currentIndex"), 
+        key: ValueKey("$url-$_currentIndex"), // Unique key forces rebuild
         file: cachedFile, 
         url: url,
         isLooping: shouldLoop, 
@@ -192,33 +194,20 @@ class _ContentPlayerState extends State<ContentPlayer> {
 
   @override
   Widget build(BuildContext context) {
+    // [PERFORMANCE FIX] ลบ AnimatedSwitcher ออก
+    // การทำ Fade Animation บน Video กิน CPU มาก ทำให้กระตุก
+    // เปลี่ยนเป็น Container ธรรมดาเพื่อให้เปลี่ยนภาพทันที
     return Container(
       width: double.infinity,
       height: double.infinity,
       color: Colors.black, 
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 800),
-        layoutBuilder: (currentChild, previousChildren) {
-          return Stack(
-            fit: StackFit.expand,
-            alignment: Alignment.center,
-            children: [
-              ...previousChildren, 
-              if (currentChild != null) currentChild,
-            ],
-          );
-        },
-        transitionBuilder: (Widget child, Animation<double> animation) {
-          return FadeTransition(opacity: animation, child: child);
-        },
-        child: _currentContent ?? const SizedBox(),
-      ),
+      child: _currentContent ?? const SizedBox(),
     );
   }
 }
 
 // ==========================================
-// 📽️ MediaKit Video Player Widget (Fixed Freeze Issue)
+// 📽️ MediaKit Video Player Widget (Native Tuned)
 // ==========================================
 class _MediaKitVideoItem extends StatefulWidget {
   final File? file;
@@ -238,75 +227,93 @@ class _MediaKitVideoItem extends StatefulWidget {
   State<_MediaKitVideoItem> createState() => _MediaKitVideoItemState();
 }
 
-// [FIX] เพิ่ม WidgetsBindingObserver เพื่อดักจับสถานะแอป
-// ... (ส่วน import อื่นๆ เหมือนเดิม)
-
-// คลาส _MediaKitVideoItemState แก้ไขดังนี้
 class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBindingObserver {
-  // [PERFORMANCE] 1. เพิ่ม Configuration เพื่อลดอาการแลค
-  late final Player player = Player(
-    configuration: const PlayerConfiguration(
-      // เพิ่ม Buffer เป็น 32MB (ช่วยลดกระตุกเวลาอ่านไฟล์ไม่ทัน)
-      bufferSize: 32 * 1024 * 1024, 
-      // บังคับใช้ log level เพื่อดู error ถ้ามี
-      logLevel: MPVLogLevel.warn,
-    ),
-  );
-  
-  late final VideoController controller = VideoController(player);
-  
+  late final Player player;
+  late final VideoController controller;
   bool _isVideoReady = false; 
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    
+    // 1. Player Config: Buffer เหมาะสมกับ HD
+    player = Player(
+      configuration: const PlayerConfiguration(
+        bufferSize: 24 * 1024 * 1024, // 24MB (ค่ากลางๆ)
+        logLevel: MPVLogLevel.warn,
+      ),
+    );
+
+    // 2. Controller Config: เปิด HW Acceleration
+    controller = VideoController(
+      player,
+      configuration: const VideoControllerConfiguration(
+        enableHardwareAcceleration: true,
+        androidAttachSurfaceAfterVideoParameters: true,
+      ),
+    );
+
     _initPlayer();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // [FIX] ต้อง dispose player เสมอเพื่อคืน RAM
     player.dispose(); 
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
-      if (!player.state.playing) {
-         // บังคับเล่นต่อถ้าแอพโดนบัง
-         player.play();
-      }
+    if (state == AppLifecycleState.resumed) {
+      // บังคับเล่นต่อถ้ากลับเข้ามา
+      player.play();
     }
   }
 
   Future<void> _initPlayer() async {
     try {
+      // [PERFORMANCE HACK] เจาะจงเรียกใช้คำสั่งระดับ Native
+      // ต้อง cast เป็น dynamic เพราะเวอร์ชัน 1.1.10 ไม่มี method setProperty โดยตรง
+      final native = player.platform as dynamic; 
+
+      if (native != null) {
+        try {
+          // สั่งใช้ MediaCodec (ชิปวิดีโอของ Android)
+          await native.setProperty('hwdec', 'mediacodec');
+          await native.setProperty('hwdec-codecs', 'all');
+          
+          // ลดคุณภาพการประมวลผลที่ไม่จำเป็น
+          await native.setProperty('profile', 'fast');
+          await native.setProperty('vd-lavc-threads', '0'); 
+          
+          // สำคัญ! ช่วยเรื่องเสียงกับภาพไม่ตรงกันในกล่องสเปคต่ำ
+          await native.setProperty('video-sync', 'audio'); 
+        } catch (e) {
+          print("Native property error (safe to ignore): $e");
+        }
+      }
+
       final Media media = widget.file != null 
           ? Media(widget.file!.path) 
           : Media(widget.url);
 
       await player.open(media, play: true);
       
-      // [FIX AUDIO] 2. แก้ปัญหาเสียงไม่ออก
-      await player.setVolume(100.0); // บังคับเปิดเสียง 100%
-      await player.setAudioTrack(AudioTrack.auto()); // เลือก Track เสียงอัตโนมัติ
-
-      // [PERFORMANCE] 3. ตั้งค่า Loop แบบ Native เพื่อความลื่นไหล
+      await player.setVolume(100.0);
+      await player.setAudioTrack(AudioTrack.auto()); 
       await player.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
 
+      // รอให้ภาพมาจริงๆ ก่อนค่อยโชว์ (แก้จอดำ)
       player.stream.videoParams.listen((params) {
-        // เช็คว่ามีภาพมาแล้วจริงๆ
         if (params.w != null && params.h != null && !_isVideoReady) {
           if (mounted) setState(() => _isVideoReady = true);
         }
       });
 
-      // Timeout กันเหนียว ถ้าโหลดนานเกิน 1 วิ ให้โชว์เลย (ป้องกันจอดำนาน)
-      Future.delayed(const Duration(milliseconds: 1000), () {
+      // Safety timeout 
+      Future.delayed(const Duration(milliseconds: 500), () {
         if (mounted && !_isVideoReady) {
            setState(() => _isVideoReady = true);
         }
@@ -319,9 +326,8 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBind
       });
 
       player.stream.error.listen((error) {
-        print("❌ MediaKit Error: $error");
-        // ถ้า error ให้ข้ามไปไฟล์ถัดไปเลย
-        widget.onFinished();
+        print("Media Error: $error");
+        widget.onFinished(); 
       });
 
     } catch (e) {
@@ -332,22 +338,21 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBind
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedOpacity(
-      // ปรับเวลา Fade ให้เร็วขึ้นเล็กน้อยเพื่อให้รู้สึกทันใจขึ้น (จากเดิมอาจจะช้าไป)
-      opacity: _isVideoReady ? 1.0 : 0.0, 
-      duration: const Duration(milliseconds: 300), 
-      child: Video(
-        controller: controller,
-        fit: BoxFit.cover,
-        controls: NoVideoControls,
-        // ใช้สีดำแทน transparent เพื่อป้องกันภาพกระพริบ
-        fill: Colors.black, 
-      ),
+    // ใช้ Container สีดำธรรมดา ลดภาระการ render ของ AnimatedOpacity
+    if (!_isVideoReady) {
+      return const SizedBox(); // ไม่แสดงอะไรเลยช่วงโหลด
+    }
+
+    return Video(
+      controller: controller,
+      fit: BoxFit.cover,
+      controls: NoVideoControls,
+      fill: Colors.black, 
     );
   }
 }
 
-// --- Sub Widgets (คงเดิม) ---
+// --- Sub Widgets ---
 
 class _WebviewItem extends StatefulWidget {
   final String url;
