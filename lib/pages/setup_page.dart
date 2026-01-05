@@ -2,10 +2,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:qr_flutter/qr_flutter.dart'; // [Import QR]
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../utils/device_util.dart';
+import '../utils/version_update.dart'; // [Added] Import VersionUpdater
 import 'loading_page.dart';
 
 class SetupPage extends StatefulWidget {
@@ -71,11 +72,31 @@ class _SetupPageState extends State<SetupPage> {
     }
   }
 
+  // [New Function] ปุ่มกดเช็คอัปเดต
+  Future<void> _checkUpdate() async {
+    FocusScope.of(context).unfocus();
+    // ใช้ URL จาก Text Field ปัจจุบันเลย
+    String currentUrl = _urlCtrl.text.trim();
+    if (currentUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter API URL first'))
+      );
+      return;
+    }
+    
+    // เรียก VersionUpdater
+    await VersionUpdater.checkAndMaybeUpdate(
+      context, 
+      silent: false, // ให้แสดง Toast/Dialog บอกสถานะ
+      specificUrl: currentUrl // ส่ง URL นี้ไปใช้เลยไม่ต้องรอ Save
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Setup Device')),
-      body: SingleChildScrollView( // [Added] เผื่อจอเล็กจะได้เลื่อนได้
+      body: SingleChildScrollView( 
         padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -84,9 +105,9 @@ class _SetupPageState extends State<SetupPage> {
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: Colors.white, // พื้นขาวเพื่อให้ QR อ่านง่าย
+                color: Colors.white, 
                 borderRadius: BorderRadius.circular(12),
-                boxShadow: [
+                boxShadow: const [
                   BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0,4))
                 ]
               ),
@@ -97,18 +118,16 @@ class _SetupPageState extends State<SetupPage> {
                   ),
                   const SizedBox(height: 15),
                   
-                  // [NEW] QR Code Widget
                   if (_myDeviceId != "Loading...")
                     QrImageView(
-                      data: _myDeviceId, // ข้อมูลใน QR คือ Device ID
+                      data: _myDeviceId,
                       version: QrVersions.auto,
                       size: 200.0,
-                      backgroundColor: Colors.white, // พื้นหลัง QR ต้องขาวเสมอ
+                      backgroundColor: Colors.white,
                     ),
                   
                   const SizedBox(height: 15),
                   
-                  // Device ID Text (กด Copy ได้)
                   InkWell(
                     onTap: () {
                       Clipboard.setData(ClipboardData(text: _myDeviceId));
@@ -128,10 +147,10 @@ class _SetupPageState extends State<SetupPage> {
                               _myDeviceId, 
                               textAlign: TextAlign.center,
                               style: const TextStyle(
-                                fontSize: 16, // ลดขนาดลงนิดนึงเพราะ UUID ยาว
+                                fontSize: 16, 
                                 fontWeight: FontWeight.bold, 
                                 color: Colors.black87,
-                                fontFamily: 'Courier', // ใช้ Font แบบพิมพ์ดีดให้อ่านง่าย
+                                fontFamily: 'Courier',
                               ),
                             ),
                           ),
@@ -160,6 +179,7 @@ class _SetupPageState extends State<SetupPage> {
             
             const SizedBox(height: 20),
             
+            // ปุ่ม Save & Start
             ElevatedButton.icon(
               onPressed: _isLoading ? null : _saveAndConnect,
               icon: _isLoading 
@@ -170,6 +190,20 @@ class _SetupPageState extends State<SetupPage> {
                 padding: const EdgeInsets.symmetric(vertical: 15),
                 backgroundColor: Colors.blueAccent,
                 foregroundColor: Colors.white,
+              ),
+            ),
+
+            const SizedBox(height: 15),
+
+            // [New Button] ปุ่ม Check Update
+            OutlinedButton.icon(
+              onPressed: _isLoading ? null : _checkUpdate,
+              icon: const Icon(Icons.system_update),
+              label: const Text('Check for Update'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                foregroundColor: Colors.blueAccent,
+                side: const BorderSide(color: Colors.blueAccent),
               ),
             ),
 

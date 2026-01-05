@@ -5,13 +5,16 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:install_plugin/install_plugin.dart';
 import 'package:overlay_support/overlay_support.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:signage_app/utils/downloadUI.dart';
-import 'package:signage_app/utils/downloadprogressdialog.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+// [Fixed] Import ไฟล์ที่อยู่ใน folder utils เดียวกัน ใช้ชื่อไฟล์ตรงๆ ได้เลย
+import 'downloadUI.dart'; 
+import 'downloadprogressdialog.dart';
+import 'device_util.dart';
 
 enum UpdateCheckResult {
   upToDate,
@@ -21,109 +24,121 @@ enum UpdateCheckResult {
 }
 
 class VersionUpdater {
-  static final _storage = const FlutterSecureStorage();
-  static double? _lastPct;
-
   static Future<UpdateCheckResult> checkAndMaybeUpdate(
     BuildContext context, {
     bool silent = false,
+    String? specificUrl,
   }) async {
-    final base = dotenv.env['API_BASE_URL']?.trim() ?? '';
+    // 1. เตรียม URL
+    String base = specificUrl ?? '';
+    if (base.isEmpty) {
+      final prefs = await SharedPreferences.getInstance();
+      base = prefs.getString('api_base_url') ?? dotenv.env['API_BASE_URL']?.trim() ?? '';
+    }
+    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+
+    if (base.isEmpty) {
+      if (!silent) _toast('ไม่พบ API URL');
+      return UpdateCheckResult.failedOrAborted;
+    }
+
     final versionApi = '$base/companyDetail/signageApk';
+    final dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      receiveTimeout: const Duration(seconds: 15),
+      validateStatus: (s) => s != null && s < 500,
+    ));
 
     try {
-      // อ่าน token / com_id
-      final token = (await _storage.read(key: 'token'))?.trim();
-      final comId = (await _storage.read(key: 'com_id'))?.trim();
+      if (!silent) _toast('กำลังตรวจสอบอัปเดต...');
 
-      if (token == null || token.isEmpty || comId == null || comId.isEmpty) {
-        if (!silent) _toast('ยังไม่พบ token หรือ com_id');
+      // 2. หา com_id จาก Device ID
+      final deviceId = await DeviceUtil.getDeviceId();
+      final comIdUrl = '$base/bus/comId/$deviceId';
+
+      final comIdRes = await dio.get(comIdUrl);
+      if (comIdRes.statusCode != 200) {
+        if (!silent) _toast('ไม่พบข้อมูลเครื่อง (HTTP ${comIdRes.statusCode})');
         return UpdateCheckResult.failedOrAborted;
       }
 
-      final info = await PackageInfo.fromPlatform();
+      final comIdData = comIdRes.data is Map 
+          ? comIdRes.data 
+          : json.decode(comIdRes.data.toString());
 
-      final dio = Dio(
-        BaseOptions(
-          connectTimeout: const Duration(seconds: 8),
-          receiveTimeout: const Duration(seconds: 15),
-          responseType: ResponseType.json,
-          validateStatus: (s) => s != null && s >= 200 && s < 500,
-          headers: {
-            'Authorization': 'Bearer $token',
-            'com_id': comId, // Express จะ lowercase เป็น 'comid'
-            'Accept': 'application/json',
-          },
-        ),
+      final busComId = comIdData['data']?['bus_com_id'];
+      if (busComId == null) {
+        if (!silent) _toast('ไม่พบ com_id ในระบบ');
+        return UpdateCheckResult.failedOrAborted;
+      }
+
+      // 3. เช็คเวอร์ชัน
+      final info = await PackageInfo.fromPlatform();
+      
+      final res = await dio.get(
+        versionApi,
+        options: Options(headers: {'com_id': busComId.toString()}),
       );
 
-      final res = await dio.get(versionApi);
-
       if (res.statusCode != 200) {
-        if (!silent) _toast('เช็คเวอร์ชันล้มเหลว (HTTP ${res.statusCode})');
+        if (!silent) _toast('เช็คเวอร์ชันไม่ได้ (HTTP ${res.statusCode})');
         return UpdateCheckResult.failedOrAborted;
       }
 
-      final data = res.data is Map
-          ? res.data as Map
-          : json.decode(res.data as String) as Map;
-
-      final minVersion = (data['min_supported_version'] ?? '')
-          .toString()
-          .trim();
+      final data = res.data is Map ? res.data as Map : json.decode(res.data.toString()) as Map;
+      final minVersion = (data['min_supported_version'] ?? '').toString().trim();
       final latestVersion = (data['latest_version'] ?? '').toString().trim();
       final apkUrl = (data['apk_url'] ?? '').toString().trim();
-      // final serverSha256 = (data['sha256'] ?? '').toString().trim(); // ถ้าจะใช้ตรวจไฟล์
 
       // เทียบเวอร์ชัน
       if (_isLower(info.version, minVersion)) {
-        // บังคับอัปเดต
         await _showForceDialog(context, apkUrl, latestVersion, info.version);
         return UpdateCheckResult.forceUpdateRequired;
       } else if (_isLower(info.version, latestVersion)) {
-        // มีอัปเดต (optional)
-        if (!silent) {
-          await _showSoftDialog(context, apkUrl, latestVersion);
-        }
+        await _showSoftDialog(context, apkUrl, latestVersion);
         return UpdateCheckResult.softUpdateAvailable;
       } else {
-        if (!silent) _toast('เป็นเวอร์ชันล่าสุดแล้ว');
+        if (!silent) _showUpToDateDialog(context, info.version);
         return UpdateCheckResult.upToDate;
       }
     } catch (e) {
-      // if (!silent) _toast('เชื่อมต่อเช็คเวอร์ชันไม่ได้: $e');
+      if (!silent) _toast('Error: $e');
+      print('Update Error: $e');
       return UpdateCheckResult.failedOrAborted;
     }
   }
 
   // ---------- UI helpers ----------
 
+  static Future<void> _showUpToDateDialog(BuildContext context, String currentVersion) async {
+    await showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('ตรวจสอบเวอร์ชัน'),
+        content: Text('แอปเป็นเวอร์ชันล่าสุดแล้ว ($currentVersion)'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('ตกลง')),
+        ],
+      ),
+    );
+  }
+
   static Future<void> _showForceDialog(
-    BuildContext context,
-    String apkUrl,
-    String targetVersion,
-    String currentVersion,
+    BuildContext context, String apkUrl, String targetVersion, String currentVersion
   ) async {
     await showDialog(
       context: context,
       barrierDismissible: false,
       builder: (_) => AlertDialog(
-        title: const Text('บังคับอัปเดต'),
-        content: Text(
-          'เวอร์ชันปัจจุบัน: $currentVersion \n'
-          'กรุณาอัปเดตเป็น $targetVersion เพื่อใช้งานต่อ\n',
-        ),
+        title: const Text('ต้องอัปเดต'),
+        content: Text('เวอร์ชันปัจจุบัน: $currentVersion\nกรุณาอัปเดตเป็น $targetVersion'),
         actions: [
-          // TextButton(
-          //   onPressed: () => Navigator.pop(context),
-          //   child: const Text('ไม่ใช่ตอนนี้'),
-          // ),
           TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _downloadAndInstall(context, apkUrl, targetVersion);
+            onPressed: () {
+               Navigator.pop(context);
+               _downloadAndInstall(context, apkUrl, targetVersion);
             },
-            child: const Text('อัปเดตตอนนี้'),
+            child: const Text('อัปเดตเดี๋ยวนี้'),
           ),
         ],
       ),
@@ -131,24 +146,19 @@ class VersionUpdater {
   }
 
   static Future<void> _showSoftDialog(
-    BuildContext context,
-    String apkUrl,
-    String targetVersion,
+    BuildContext context, String apkUrl, String targetVersion
   ) async {
     await showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('มีเวอร์ชันใหม่'),
-        content: Text('ต้องการอัปเดตเป็น $targetVersion หรือไม่'),
+        content: Text('พบเวอร์ชัน $targetVersion ต้องการอัปเดตไหม?'),
         actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('ภายหลัง')),
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('ภายหลัง'),
-          ),
-          TextButton(
-            onPressed: () async {
+            onPressed: () {
               Navigator.pop(context);
-              await _downloadAndInstall(context, apkUrl, targetVersion);
+              _downloadAndInstall(context, apkUrl, targetVersion);
             },
             child: const Text('อัปเดต'),
           ),
@@ -159,10 +169,10 @@ class VersionUpdater {
 
   // ---------- Core helpers ----------
 
-  static bool _isLower(String a, String b) {
-    if (b.isEmpty) return false;
-    final pa = a.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-    final pb = b.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+  static bool _isLower(String current, String target) {
+    if (target.isEmpty) return false;
+    final pa = current.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final pb = target.split('.').map((e) => int.tryParse(e) ?? 0).toList();
     while (pa.length < 3) pa.add(0);
     while (pb.length < 3) pb.add(0);
     for (var i = 0; i < 3; i++) {
@@ -173,12 +183,10 @@ class VersionUpdater {
   }
 
   static Future<void> _downloadAndInstall(
-    BuildContext context, // 👈 เพิ่ม context
-    String apkUrl,
-    String version,
+    BuildContext context, String apkUrl, String version
   ) async {
     if (apkUrl.isEmpty) {
-      _toast('ไม่พบลิงก์ไฟล์อัปเดต');
+      _toast('ลิงก์ดาวน์โหลดไม่ถูกต้อง');
       return;
     }
     final dio = Dio();
@@ -186,26 +194,28 @@ class VersionUpdater {
     try {
       final dir = await getApplicationSupportDirectory();
       final savePath = '${dir.path}/update_$version.apk';
+      
+      final file = File(savePath);
+      if (await file.exists()) await file.delete();
 
-      // เริ่ม UI
-      DownloadUI.start();
-      unawaited(
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (_) => DownloadProgressDialog(
-            title: 'กำลังอัปเดตเป็นเวอร์ชัน $version',
-            percent: DownloadUI.percent,
-            detail: DownloadUI.detail,
-            onCancel: () {
-              DownloadUI.cancel();
-              Navigator.of(context).maybePop();
-            },
-          ),
+      DownloadUI.start(); // เรียกใช้ไฟล์ DownloadUI.dart
+      
+      // แสดง Dialog Progress
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => DownloadProgressDialog( // เรียกใช้ไฟล์ DownloadProgressDialog.dart
+          title: 'กำลังอัปเดต...',
+          percent: DownloadUI.percent,
+          detail: DownloadUI.detail,
+          onCancel: () {
+            DownloadUI.cancel();
+            Navigator.of(context).maybePop();
+          },
         ),
       );
 
-      // ยิงโหลด (อัปเดตตรง + throttle 100ms)
+      // เริ่มโหลด
       int lastRec = 0;
       int lastEmitMs = 0;
       final sw = Stopwatch()..start();
@@ -217,12 +227,12 @@ class VersionUpdater {
         onReceiveProgress: (rec, total) {
           final elapsedSec = sw.elapsedMilliseconds / 1000.0;
           final speedBps = elapsedSec > 0 ? (rec - lastRec) / elapsedSec : 0.0;
-
           final nowMs = DateTime.now().millisecondsSinceEpoch;
+          
           if (nowMs - lastEmitMs >= 100 || rec == total) {
             DownloadUI.update(
               received: rec,
-              total: total, // ถ้า total <= 0 จะกลายเป็นแถบ indeterminate ให้เอง
+              total: total,
               speedBytesPerSec: speedBps,
             );
             lastEmitMs = nowMs;
@@ -235,31 +245,23 @@ class VersionUpdater {
       DownloadUI.done();
       DownloadUI.installing();
 
+      // ปิด Dialog
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+
+      // ติดตั้ง
       await InstallPlugin.installApk(savePath);
 
-      // ปิด Dialog
-      if (Navigator.of(context).canPop()) {
-        Navigator.of(context).pop();
-      }
     } on DioException catch (e) {
-      if (CancelToken.isCancel(e)) {
-        // ผู้ใช้กดยกเลิก
-        _toast('ยกเลิกการดาวน์โหลด');
-      } else {
-        _toast('ดาวน์โหลดล้มเหลว: ${e.message}');
-      }
-      if (Navigator.of(context).canPop()) {
-        Navigator.of(context).pop();
-      }
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+      if (!CancelToken.isCancel(e)) _toast('ดาวน์โหลดล้มเหลว: ${e.message}');
     } catch (e) {
-      _toast('ติดตั้งอัปเดตไม่สำเร็จ: $e');
-      if (Navigator.of(context).canPop()) {
-        Navigator.of(context).pop();
-      }
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+      _toast('ติดตั้งล้มเหลว: $e');
     }
   }
 
   static void _toast(String msg) {
+    // ต้องมี OverlaySupport.global ใน main.dart ถึงจะทำงาน
     showSimpleNotification(Text(msg), background: Colors.black87);
   }
 }

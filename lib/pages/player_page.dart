@@ -1,3 +1,4 @@
+// lib/pages/player_page.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -10,6 +11,7 @@ import '../models/layout_model.dart';
 import '../services/api_service.dart';
 import '../services/preload_service.dart';
 import '../utils/device_util.dart';
+import '../utils/version_update.dart'; // [Added] Import VersionUpdater
 import '../widgets/layout_renderer.dart';
 import '../widgets/content_player.dart';
 import 'setup_page.dart';
@@ -225,13 +227,25 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // ฟังก์ชันแสดง Dialog ใส่รหัส
-  void _showExitPinDialog() {
-    showDialog(
+  // [Modified] เปลี่ยนชื่อฟังก์ชันจาก _showExitPinDialog เป็น _handleAdminMenu
+  Future<void> _handleAdminMenu() async {
+    // แสดง Dialog และรอผลลัพธ์ว่า User เลือกอะไร ('exit' หรือ 'update')
+    final String? action = await showDialog<String>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const _PinExitDialog(),
+      builder: (context) => const _AdminMenuDialog(),
     );
+
+    if (action == 'exit') {
+       // ถ้าเลือก Exit -> ปิด Kiosk และออกแอพ
+       await _setKioskMode(false);
+       if (mounted) SystemNavigator.pop();
+    } else if (action == 'update') {
+       // ถ้าเลือก Update -> เรียก VersionUpdater
+       if (mounted) {
+         await VersionUpdater.checkAndMaybeUpdate(context);
+       }
+    }
   }
 
   @override
@@ -241,8 +255,8 @@ class _PlayerPageState extends State<PlayerPage> {
       canPop: false, 
       onPopInvoked: (didPop) {
         if (didPop) return;
-        // เมื่อกด Back (หรือปุ่มรีโมท) ให้เรียก Dialog
-        _showExitPinDialog();
+        // เมื่อกด Back (หรือปุ่มรีโมท) ให้เรียก Admin Menu
+        _handleAdminMenu();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -274,15 +288,15 @@ class _PlayerPageState extends State<PlayerPage> {
                   ),
                 ),
 
-              // Control Buttons (Close App)
+              // Control Buttons (Hidden Menu)
               if (_showControls)
                 Positioned(
                   top: 20, right: 20,
                   child: SafeArea(
                     child: FloatingActionButton(
                       backgroundColor: Colors.red.withOpacity(0.8),
-                      child: const Icon(Icons.close, color: Colors.white),
-                      onPressed: () => _showExitPinDialog(), // เรียก Dialog เหมือนกัน
+                      child: const Icon(Icons.settings, color: Colors.white), // เปลี่ยน Icon เป็น Settings ให้สื่อความหมาย
+                      onPressed: () => _handleAdminMenu(), // เรียก Admin Menu
                     ),
                   ),
                 ),
@@ -299,39 +313,42 @@ class _PlayerPageState extends State<PlayerPage> {
 }
 
 // ==========================================
-// 🔐 PIN Exit Dialog Widget
+// 🔐 Admin Menu Dialog (รวม PIN และ เมนู)
 // ==========================================
-class _PinExitDialog extends StatefulWidget {
-  const _PinExitDialog({super.key});
+class _AdminMenuDialog extends StatefulWidget {
+  const _AdminMenuDialog({super.key});
 
   @override
-  State<_PinExitDialog> createState() => _PinExitDialogState();
+  State<_AdminMenuDialog> createState() => _AdminMenuDialogState();
 }
 
-class _PinExitDialogState extends State<_PinExitDialog> {
-  static const platform = MethodChannel('com.example.signage_app/kiosk');
-
+class _AdminMenuDialogState extends State<_AdminMenuDialog> {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
   Timer? _timer;
   int _countdown = 10; 
+  bool _isUnlocked = false; // [Added] สถานะปลดล็อค (ถ้าใส่รหัสถูกจะเปลี่ยนหน้า)
 
   @override
   void initState() {
     super.initState();
-    // Auto Focus ให้พิมพ์ได้เลย
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNode.requestFocus();
     });
 
-    // เริ่มนับถอยหลัง 10 วิ
+    // เริ่มนับถอยหลัง 10 วิ (เฉพาะตอนยังไม่ปลดล็อค)
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
+          if (_isUnlocked) {
+             timer.cancel(); // ถ้าปลดล็อคแล้ว ไม่ต้องนับ
+             return;
+          }
+
           if (_countdown > 0) {
             _countdown--;
           } else {
-            // หมดเวลา -> ปิด Dialog (ยกเลิกการออก)
+            // หมดเวลา -> ปิด Dialog
             timer.cancel();
             Navigator.of(context).pop(); 
           }
@@ -348,39 +365,85 @@ class _PinExitDialogState extends State<_PinExitDialog> {
     super.dispose();
   }
 
-  void _onPinChanged(String value) async {
+  void _onPinChanged(String value) {
     if (value == '000000') { 
-      _timer?.cancel();
-      
-      // 1. ปลดล็อค Kiosk Mode ก่อนออก (สำคัญมาก!)
-      try {
-        await platform.invokeMethod('stopKioskMode');
-      } catch (e) {
-        print("Error stopping kiosk mode: $e");
-      }
-
-      // 2. ปิดแอป
-      if (mounted) {
-        SystemNavigator.pop(); 
-      }
+      _timer?.cancel(); // หยุดนับเวลาทันที
+      setState(() {
+        _isUnlocked = true; // [Key Logic] เปลี่ยนสถานะเป็น Unlock
+      });
+      // ไม่ต้องสั่ง pop หรือ SystemNavigator.pop() ที่นี่ รอ user กดปุ่มเลือกเอง
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // ----------------------------------------
+    // [View 2] หน้าเมนู Admin (เมื่อใส่รหัสถูก)
+    // ----------------------------------------
+    if (_isUnlocked) {
+      return AlertDialog(
+        backgroundColor: Colors.white,
+        title: const Row(
+          children: [
+            Icon(Icons.admin_panel_settings, color: Colors.blue),
+            SizedBox(width: 10),
+            Text("Admin Menu", style: TextStyle(color: Colors.black)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ปุ่ม Check Update
+            ElevatedButton.icon(
+              onPressed: () => Navigator.pop(context, 'update'), // ส่งค่า 'update' กลับไป
+              icon: const Icon(Icons.system_update),
+              label: const Text('Check for App Update'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 15),
+            // ปุ่ม Exit App
+            ElevatedButton.icon(
+              onPressed: () => Navigator.pop(context, 'exit'), // ส่งค่า 'exit' กลับไป
+              icon: const Icon(Icons.exit_to_app),
+              label: const Text('Exit Application'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(), 
+            child: const Text("Close"),
+          ),
+        ],
+      );
+    }
+
+    // ----------------------------------------
+    // [View 1] หน้าใส่ PIN (ค่าเริ่มต้น)
+    // ----------------------------------------
     return AlertDialog(
       backgroundColor: Colors.white,
       title: Row(
         children: [
           const Icon(Icons.lock_clock, color: Colors.red),
           const SizedBox(width: 10),
-          Text("Exit App? ($_countdown)", style: const TextStyle(color: Colors.black)),
+          Text("Admin Access ($_countdown)", style: const TextStyle(color: Colors.black)),
         ],
       ),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text("Enter PIN '000000' to exit.", style: TextStyle(color: Colors.black54)),
+          const Text("Enter PIN to access menu.", style: TextStyle(color: Colors.black54)),
           const SizedBox(height: 15),
           TextField(
             controller: _controller,
