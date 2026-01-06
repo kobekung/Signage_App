@@ -2,8 +2,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:connectivity_plus/connectivity_plus.dart'; // [Added] ต้อง import อันนี้
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // [จำเป็น] สำหรับ MethodChannel, SystemNavigator
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -11,7 +12,7 @@ import '../models/layout_model.dart';
 import '../services/api_service.dart';
 import '../services/preload_service.dart';
 import '../utils/device_util.dart';
-import '../utils/version_update.dart'; // [Added] Import VersionUpdater
+import '../utils/version_update.dart';
 import '../widgets/layout_renderer.dart';
 import '../widgets/content_player.dart';
 import 'setup_page.dart';
@@ -33,24 +34,25 @@ class PlayerPage extends StatefulWidget {
 }
 
 class _PlayerPageState extends State<PlayerPage> {
-  // Channel สำหรับคุยกับ Android (Kiosk Mode)
   static const platform = MethodChannel('com.example.signage_app/kiosk');
 
   bool _showControls = false;
-
-  // Location Override State
-  Timer? _locationPollTimer;
-  String? _currentLocationId; 
   
-  // เก็บ List เพื่อรองรับการเล่นวนหลายไฟล์ใน Location เดียวกัน
+  // Refresh Key: เอาไว้สั่ง Reload หน้าจอตอนเน็ตมา
+  int _refreshKey = 0; 
+
+  // Network State
+  StreamSubscription? _netSubscription;
+
+  // Timers
+  Timer? _locationPollTimer;
+  Timer? _updateCheckTimer;
+  
+  // Logic State
+  String? _currentLocationId; 
   Map<String, List<dynamic>> _activeLocationOverrides = {}; 
   SignageWidget? _activeFullscreenOverride; 
-
-  // Auto Update State
-  Timer? _updateCheckTimer;
   bool _isDownloadingUpdate = false;
-
-  // Normal Playlist Fullscreen State
   String? _playlistFullscreenId;
 
   String get _busApiUrl => 'https://public.bussing.app/bus-info/busround-active?busno=${widget.busId}&com_id=${widget.companyId}';
@@ -60,49 +62,76 @@ class _PlayerPageState extends State<PlayerPage> {
     super.initState();
     print("🚀 Player Start: Bus ${widget.busId}, Com ${widget.companyId}");
     
-    // 0. เปิด Kiosk Mode (ล็อคปุ่ม Home)
     _setKioskMode(true);
 
-    // 1. Check Location (30s)
+    // 1. เริ่มฟังสถานะเน็ต (Internet Listener)
+    _initConnectivityListener();
+
+    // 2. Timers
     _locationPollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkBusLocation());
     _checkBusLocation(); 
 
-    // 2. Check Update (5m)
     _updateCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) => _checkForLayoutUpdate());
   }
 
   @override
   void dispose() {
-    // ปลดล็อค Kiosk Mode เมื่อออกจากหน้านี้ (เผื่อกรณีออกด้วยวิธีอื่น)
     _setKioskMode(false);
-
     _locationPollTimer?.cancel();
     _updateCheckTimer?.cancel();
+    _netSubscription?.cancel(); // อย่าลืม cancel
     super.dispose();
   }
 
   // ============================
-  // 0. Kiosk Mode Logic
+  // 0. Connectivity Logic (New)
+  // ============================
+  void _initConnectivityListener() {
+    _netSubscription = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
+      // เช็คว่ามีการเชื่อมต่อเน็ตหรือไม่ (WiFi, Mobile, Ethernet)
+      bool isConnected = results.any((r) => r != ConnectivityResult.none);
+      
+      if (isConnected) {
+        print("⚡ Internet Restored! Reloading content...");
+        
+        // 1. เช็คอัปเดตทันที
+        _checkForLayoutUpdate();
+
+        // 2. รีโหลดหน้าจอ (เพื่อให้ WebView ที่ค้าง error โหลดใหม่)
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) {
+            setState(() {
+              _refreshKey++; // เปลี่ยน Key -> บังคับ Rebuild Widget
+            });
+          }
+        });
+      } else {
+        print("⚠️ Internet Lost");
+      }
+    });
+  }
+
+  // ============================
+  // 1. Kiosk & Location
   // ============================
   Future<void> _setKioskMode(bool enable) async {
     try {
       if (enable) {
         await platform.invokeMethod('startKioskMode');
-        print("🔒 Kiosk Mode Enabled");
       } else {
         await platform.invokeMethod('stopKioskMode');
-        print("🔓 Kiosk Mode Disabled");
       }
     } on PlatformException catch (e) {
       print("⚠️ Kiosk Mode Error: ${e.message}");
     }
   }
 
-  // ============================
-  // 1. Location Logic (Looping Support)
-  // ============================
   Future<void> _checkBusLocation() async {
     try {
+      // ถ้าไม่มีเน็ต ไม่ต้องยิง API ให้ error เล่น
+      final connectivity = await Connectivity().checkConnectivity();
+      if (connectivity.contains(ConnectivityResult.none) && connectivity.length == 1) return;
+
       final response = await http.get(Uri.parse(_busApiUrl));
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body);
@@ -131,16 +160,9 @@ class _PlayerPageState extends State<PlayerPage> {
         final props = widget.properties;
         if (props['playlist'] is List) {
           final playlist = props['playlist'] as List;
-          
-          // ดึงทุกรายการที่ตรงกับ Location นี้มา (เพื่อให้เล่นวนได้หลายไฟล์)
-          final matchItems = playlist.where(
-            (item) => item['locationId'].toString() == locationId
-          ).toList();
+          final matchItems = playlist.where((item) => item['locationId'].toString() == locationId).toList();
 
           if (matchItems.isNotEmpty) {
-            print("✨ Location Match! Widget: ${widget.id}, Items: ${matchItems.length}");
-            
-            // แยกกรณี Fullscreen กับ In-Place
             final fullscreenItems = matchItems.where((i) => i['fullscreen'] == true).toList();
             final normalItems = matchItems.where((i) => i['fullscreen'] != true).toList();
 
@@ -152,15 +174,12 @@ class _PlayerPageState extends State<PlayerPage> {
                   properties: { ...props, 'playlist': fullscreenItems, 'url': null }
                );
             }
-            
             if (normalItems.isNotEmpty) {
               newOverrides[widget.id] = normalItems;
             }
           }
         }
       }
-    } else {
-      print("❌ Location Exited: Back to normal playlist");
     }
 
     if (mounted) {
@@ -172,7 +191,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   // ============================
-  // 2. Auto Update Logic
+  // 2. Auto Update Logic (Robust)
   // ============================
   Future<void> _checkForLayoutUpdate() async {
     if (_isDownloadingUpdate) return;
@@ -188,18 +207,26 @@ class _PlayerPageState extends State<PlayerPage> {
       final serverLayoutId = busConfig['id'];
       final int serverVersion = busConfig['layout_version'] ?? 0;
       
+      final String? cachedJson = prefs.getString('cached_layout_json');
+      final int localVersion = widget.layout.version;
+      
+      // เงื่อนไข: ID เปลี่ยน OR เวอร์ชันใหม่ OR (เวอร์ชันเท่า แต่ Cache หาย)
       final bool isDifferentLayout = serverLayoutId.toString() != widget.layout.id;
-      final bool isNewerVersion = serverVersion > widget.layout.version;
+      final bool isNewerVersion = serverVersion > localVersion;
+      final bool isCacheMissing = (serverVersion == localVersion) && (cachedJson == null || cachedJson.isEmpty);
 
-      if (serverLayoutId != null && (isDifferentLayout || isNewerVersion)) {
-        print("📢 Update Found: V.$serverVersion");
+      if (serverLayoutId != null && (isDifferentLayout || isNewerVersion || isCacheMissing)) {
+        print("📢 Update Found: V.$serverVersion (Reloading...)");
         setState(() => _isDownloadingUpdate = true);
         
+        // Load & Cache
         final newLayout = await api.fetchLayoutById(serverLayoutId.toString());
         await PreloadService.manageAssets(newLayout, (_,__,___){});
         
+        await prefs.setString('cached_layout_json', jsonEncode(newLayout.toJson())); 
         await prefs.setString('cached_layout_id', serverLayoutId.toString());
         await prefs.setInt('cached_layout_version', serverVersion);
+        
         await api.updateBusStatus(widget.busId, serverVersion);
 
         if (mounted) {
@@ -208,17 +235,16 @@ class _PlayerPageState extends State<PlayerPage> {
             transitionDuration: Duration.zero
           ));
         }
+      } else {
+        print("✅ Layout is up-to-date.");
       }
     } catch (e) {
-      print("⚠️ Auto-update failed: $e");
+      print("⚠️ Auto-update skipped (Offline or Error): $e");
     } finally {
       if (mounted) setState(() => _isDownloadingUpdate = false);
     }
   }
 
-  // ============================
-  // 3. Fullscreen & UI Logic
-  // ============================
   void _handleWidgetFullscreen(String widgetId, bool isFull) {
     if (isFull && _playlistFullscreenId != widgetId) {
       setState(() => _playlistFullscreenId = widgetId);
@@ -227,9 +253,7 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // [Modified] เปลี่ยนชื่อฟังก์ชันจาก _showExitPinDialog เป็น _handleAdminMenu
   Future<void> _handleAdminMenu() async {
-    // แสดง Dialog และรอผลลัพธ์ว่า User เลือกอะไร ('exit' หรือ 'update')
     final String? action = await showDialog<String>(
       context: context,
       barrierDismissible: false,
@@ -237,25 +261,19 @@ class _PlayerPageState extends State<PlayerPage> {
     );
 
     if (action == 'exit') {
-       // ถ้าเลือก Exit -> ปิด Kiosk และออกแอพ
        await _setKioskMode(false);
        if (mounted) SystemNavigator.pop();
     } else if (action == 'update') {
-       // ถ้าเลือก Update -> เรียก VersionUpdater
-       if (mounted) {
-         await VersionUpdater.checkAndMaybeUpdate(context);
-       }
+       if (mounted) await VersionUpdater.checkAndMaybeUpdate(context);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // ใช้ PopScope ดักปุ่ม Back
     return PopScope(
       canPop: false, 
       onPopInvoked: (didPop) {
         if (didPop) return;
-        // เมื่อกด Back (หรือปุ่มรีโมท) ให้เรียก Admin Menu
         _handleAdminMenu();
       },
       child: Scaffold(
@@ -269,8 +287,9 @@ class _PlayerPageState extends State<PlayerPage> {
             children: [
               // Main Renderer
               LayoutRenderer(
+                key: ValueKey("main-renderer-$_refreshKey"), // [Key] เปลี่ยนค่าเพื่อ Reload Webview
                 layout: widget.layout,
-                locationOverrides: _activeLocationOverrides, // ส่ง List ของ Location items
+                locationOverrides: _activeLocationOverrides,
                 fullscreenWidgetId: _playlistFullscreenId,
                 onWidgetFullscreen: _handleWidgetFullscreen,
               ),
@@ -281,27 +300,26 @@ class _PlayerPageState extends State<PlayerPage> {
                   color: Colors.black,
                   child: SizedBox.expand(
                     child: ContentPlayer(
-                      key: ValueKey("loc-full-${_currentLocationId}"), 
+                      key: ValueKey("loc-full-${_currentLocationId}-$_refreshKey"), 
                       widget: _activeFullscreenOverride!,
-                      isTriggerMode: false, // Loop
+                      isTriggerMode: false,
                     ),
                   ),
                 ),
 
-              // Control Buttons (Hidden Menu)
+              // Control Buttons
               if (_showControls)
                 Positioned(
                   top: 20, right: 20,
                   child: SafeArea(
                     child: FloatingActionButton(
                       backgroundColor: Colors.red.withOpacity(0.8),
-                      child: const Icon(Icons.settings, color: Colors.white), // เปลี่ยน Icon เป็น Settings ให้สื่อความหมาย
-                      onPressed: () => _handleAdminMenu(), // เรียก Admin Menu
+                      child: const Icon(Icons.settings, color: Colors.white),
+                      onPressed: () => _handleAdminMenu(),
                     ),
                   ),
                 ),
                 
-               // Update Indicator
                if (_isDownloadingUpdate)
                  Positioned(bottom: 10, left: 10, child: const CircularProgressIndicator(color: Colors.white))
             ],
@@ -312,9 +330,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 }
 
-// ==========================================
-// 🔐 Admin Menu Dialog (รวม PIN และ เมนู)
-// ==========================================
+// ... (ส่วน _AdminMenuDialog คงเดิม ไม่ต้องแก้) ...
 class _AdminMenuDialog extends StatefulWidget {
   const _AdminMenuDialog({super.key});
 
@@ -327,7 +343,7 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
   final FocusNode _focusNode = FocusNode();
   Timer? _timer;
   int _countdown = 10; 
-  bool _isUnlocked = false; // [Added] สถานะปลดล็อค (ถ้าใส่รหัสถูกจะเปลี่ยนหน้า)
+  bool _isUnlocked = false; 
 
   @override
   void initState() {
@@ -336,19 +352,16 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
       _focusNode.requestFocus();
     });
 
-    // เริ่มนับถอยหลัง 10 วิ (เฉพาะตอนยังไม่ปลดล็อค)
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
           if (_isUnlocked) {
-             timer.cancel(); // ถ้าปลดล็อคแล้ว ไม่ต้องนับ
+             timer.cancel();
              return;
           }
-
           if (_countdown > 0) {
             _countdown--;
           } else {
-            // หมดเวลา -> ปิด Dialog
             timer.cancel();
             Navigator.of(context).pop(); 
           }
@@ -367,19 +380,15 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
 
   void _onPinChanged(String value) {
     if (value == '000000') { 
-      _timer?.cancel(); // หยุดนับเวลาทันที
+      _timer?.cancel(); 
       setState(() {
-        _isUnlocked = true; // [Key Logic] เปลี่ยนสถานะเป็น Unlock
+        _isUnlocked = true; 
       });
-      // ไม่ต้องสั่ง pop หรือ SystemNavigator.pop() ที่นี่ รอ user กดปุ่มเลือกเอง
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // ----------------------------------------
-    // [View 2] หน้าเมนู Admin (เมื่อใส่รหัสถูก)
-    // ----------------------------------------
     if (_isUnlocked) {
       return AlertDialog(
         backgroundColor: Colors.white,
@@ -394,9 +403,8 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // ปุ่ม Check Update
             ElevatedButton.icon(
-              onPressed: () => Navigator.pop(context, 'update'), // ส่งค่า 'update' กลับไป
+              onPressed: () => Navigator.pop(context, 'update'),
               icon: const Icon(Icons.system_update),
               label: const Text('Check for App Update'),
               style: ElevatedButton.styleFrom(
@@ -406,9 +414,8 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
               ),
             ),
             const SizedBox(height: 15),
-            // ปุ่ม Exit App
             ElevatedButton.icon(
-              onPressed: () => Navigator.pop(context, 'exit'), // ส่งค่า 'exit' กลับไป
+              onPressed: () => Navigator.pop(context, 'exit'),
               icon: const Icon(Icons.exit_to_app),
               label: const Text('Exit Application'),
               style: ElevatedButton.styleFrom(
@@ -428,9 +435,6 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
       );
     }
 
-    // ----------------------------------------
-    // [View 1] หน้าใส่ PIN (ค่าเริ่มต้น)
-    // ----------------------------------------
     return AlertDialog(
       backgroundColor: Colors.white,
       title: Row(
