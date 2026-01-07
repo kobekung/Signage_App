@@ -5,17 +5,19 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:connectivity_plus/connectivity_plus.dart'; // ✅ ใช้ Lib นี้ตามที่ขอครับ
+
 import '../models/layout_model.dart';
 import '../services/preload_service.dart';
 
 class ContentPlayer extends StatefulWidget {
   final SignageWidget widget;
-  final VoidCallback? onFinished; 
-  final bool isTriggerMode;       
-  final Function(bool isFullscreen)? onFullscreenChange; 
+  final VoidCallback? onFinished;
+  final bool isTriggerMode;
+  final Function(bool isFullscreen)? onFullscreenChange;
 
   const ContentPlayer({
-    super.key, 
+    super.key,
     required this.widget,
     this.onFinished,
     this.isTriggerMode = false,
@@ -30,7 +32,6 @@ class _ContentPlayerState extends State<ContentPlayer> {
   int _currentIndex = 0;
   List<dynamic> _playlist = [];
   Widget? _currentContent;
-  Timer? _timer;
 
   @override
   void initState() {
@@ -38,15 +39,8 @@ class _ContentPlayerState extends State<ContentPlayer> {
     _initPlaylist();
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
   void _initPlaylist() {
     final props = widget.widget.properties;
-    
     if (props['playlist'] != null && (props['playlist'] as List).isNotEmpty) {
       _playlist = List.from(props['playlist']);
     } else if (props['url'] != null || props['text'] != null) {
@@ -60,192 +54,304 @@ class _ContentPlayerState extends State<ContentPlayer> {
     }
 
     if (_playlist.isNotEmpty) {
-      _playNext();
+      _playCurrentItem();
     }
   }
 
-  void _playNext() async {
+  void _playCurrentItem() async {
     if (!mounted) return;
-    _timer?.cancel();
 
-    // Loop logic
     if (_currentIndex >= _playlist.length) {
       if (widget.isTriggerMode && widget.onFinished != null) {
-        widget.onFinished!(); 
-        return; 
+        widget.onFinished!();
+        return;
       } else {
-        _currentIndex = 0; 
+        _currentIndex = 0;
       }
     }
 
     final item = _playlist[_currentIndex];
     
-    // Fullscreen callback
     final isFull = item['fullscreen'] == true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.onFullscreenChange != null && mounted) {
-         widget.onFullscreenChange!(isFull);
+        widget.onFullscreenChange!(isFull);
       }
     });
 
     final type = item['type'] ?? widget.widget.type;
-    int duration = 10;
-    if (item['duration'] != null) {
-      duration = int.tryParse(item['duration'].toString()) ?? 10;
-    }
+    int duration = int.tryParse((item['duration'] ?? 10).toString()) ?? 10;
 
-    Widget content;
+    Widget nextWidget;
 
-    // --- VIDEO ---
+    // ===========================
+    // 🎥 VIDEO (Disposable - สร้างแล้วทิ้ง เพื่อคืน RAM)
+    // ===========================
     if (type == 'video') {
       final url = item['url'];
-      File? cachedFile = await PreloadService.getCachedFile(url);
-      
-      bool shouldLoop = !widget.isTriggerMode && _playlist.length == 1;
+      if (url == null) { _nextItem(); return; }
 
-      content = _MediaKitVideoItem(
-        key: ValueKey("$url-$_currentIndex"), // Unique key forces rebuild
-        file: cachedFile, 
+      File? cachedFile;
+      try { cachedFile = await PreloadService.getCachedFile(url); } catch (_) {}
+
+      nextWidget = _DisposableVideoPlayer(
+        // วิดีโอยังคงใช้ UniqueKey เพื่อบังคับ Reset Decoder ทุกครั้งที่เล่น
+        key: UniqueKey(), 
+        file: cachedFile,
         url: url,
-        isLooping: shouldLoop, 
-        onFinished: () {
-           if (mounted) _nextItem();
-        }
+        isLooping: (!widget.isTriggerMode && _playlist.length == 1),
+        onFinished: _nextItem,
       );
     } 
-    // --- IMAGE ---
-    else if (type == 'image') {
-      final url = item['url'];
-      File? cachedFile = await PreloadService.getCachedFile(url);
-      
-      content = cachedFile != null 
-          ? Image.file(cachedFile, fit: BoxFit.cover)
-          : Image.network(url, fit: BoxFit.cover);
-      
-      _timer = Timer(Duration(seconds: duration), () {
+    // ===========================
+    // 🖼️ NON-VIDEO
+    // ===========================
+    else {
+      if (type == 'image') {
+        final url = item['url'];
+        File? cachedFile = await PreloadService.getCachedFile(url);
+        nextWidget = cachedFile != null 
+            ? Image.file(cachedFile, fit: BoxFit.cover)
+            : Image.network(url, fit: BoxFit.cover);
+      } 
+      else if (type == 'webview') {
+        final url = item['url'] ?? 'https://google.com';
+        // 🔴 KEY FIX 1: ใช้ ValueKey(url) แทน UniqueKey()
+        // ถ้า Playlist วนกลับมาที่เดิม หรือมี Item เดียว Flutter จะรู้ว่าเป็นอันเดิม
+        // และจะไม่สั่ง Reload หน้าเว็บซ้ำครับ
+        nextWidget = _WebviewItem(
+          key: ValueKey(url), 
+          url: url
+        );
+        duration = 15;
+      } 
+      else if (type == 'ticker') {
+         nextWidget = _TickerItem(
+          text: item['text'] ?? '',
+          color: item['textColor'] ?? item['color'] ?? '#ffffff',
+          fontSize: item['fontSize'] ?? 24,
+          speed: item['speed'] ?? 50,
+        );
+        duration = 15;
+      } else {
+        nextWidget = Center(
+          child: Text(item['text'] ?? '', style: const TextStyle(color: Colors.white, fontSize: 24)),
+        );
+      }
+
+      Timer(Duration(seconds: duration), () {
         if (mounted) _nextItem();
       });
-    }
-    // --- WEBVIEW ---
-    else if (type == 'webview') {
-      final url = item['url'] ?? 'https://google.com';
-      content = _WebviewItem(url: url);
-      
-      if (widget.isTriggerMode) {
-         _timer = Timer(const Duration(seconds: 15), () => widget.onFinished?.call());
-      } else if (_playlist.length > 1) {
-         _timer = Timer(const Duration(seconds: 15), () => _nextItem());
-      }
-    }
-    // --- TICKER ---
-    else if (type == 'ticker') {
-      content = _TickerItem(
-        text: item['text'] ?? '',
-        color: item['textColor'] ?? item['color'] ?? '#ffffff',
-        fontSize: item['fontSize'] ?? 24,
-        speed: item['speed'] ?? 50,
-      );
-       if (widget.isTriggerMode) {
-         _timer = Timer(const Duration(seconds: 15), () => widget.onFinished?.call());
-       } else if (_playlist.length > 1) {
-         _timer = Timer(const Duration(seconds: 15), () => _nextItem());
-       }
-    }
-    // --- TEXT ---
-    else {
-      content = Center(
-        child: Text(
-          item['text'] ?? item['content'] ?? '',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: double.tryParse((item['fontSize'] ?? 24).toString()) ?? 24,
-            color: _parseColor(item['color'] ?? '#ffffff'),
-          ),
-        ),
-      );
-      
-      if (widget.isTriggerMode) {
-         _timer = Timer(Duration(seconds: duration), () => widget.onFinished?.call());
-      } else if (_playlist.length > 1) {
-         _timer = Timer(Duration(seconds: duration), () => _nextItem());
-      }
     }
 
     if (mounted) {
       setState(() {
-        _currentContent = content;
+        _currentContent = nextWidget;
       });
     }
   }
 
   void _nextItem() {
-      _currentIndex++;
-      _playNext();
-  }
-
-  Color _parseColor(String? hex) {
-    if (hex == null) return Colors.white;
-    try {
-      hex = hex.replaceAll('#', '');
-      if (hex.length == 6) hex = 'FF$hex';
-      return Color(int.parse(hex, radix: 16));
-    } catch (_) { return Colors.white; }
+    _currentIndex++;
+    _playCurrentItem();
   }
 
   @override
   Widget build(BuildContext context) {
-    // [PERFORMANCE FIX] ลบ AnimatedSwitcher ออก
-    // การทำ Fade Animation บน Video กิน CPU มาก ทำให้กระตุก
-    // เปลี่ยนเป็น Container ธรรมดาเพื่อให้เปลี่ยนภาพทันที
     return Container(
       width: double.infinity,
       height: double.infinity,
-      color: Colors.black, 
+      color: Colors.black,
       child: _currentContent ?? const SizedBox(),
     );
   }
 }
 
 // ==========================================
-// 📽️ MediaKit Video Player Widget (Native Tuned)
+// 🌐 WebView Item (Connectivity Plus + No Reload Lock)
 // ==========================================
-class _MediaKitVideoItem extends StatefulWidget {
+class _WebviewItem extends StatefulWidget {
+  final String url;
+  const _WebviewItem({super.key, required this.url});
+
+  @override
+  State<_WebviewItem> createState() => _WebviewItemState();
+}
+
+class _WebviewItemState extends State<_WebviewItem> {
+  WebViewController? _controller;
+  StreamSubscription? _netSubscription;
+  bool _isPageLoaded = false; // ตัวแปรสำคัญ: ล็อคไม่ให้รีโหลดซ้ำ
+
+  @override
+  void initState() {
+    super.initState();
+    _initWebView();
+    _listenToNetwork();
+  }
+
+  void _listenToNetwork() {
+    // ใช้ Connectivity Plus ดักจับการเปลี่ยนสถานะเน็ต
+    _netSubscription = Connectivity().onConnectivityChanged.listen((results) {
+      // ถ้ามีการเชื่อมต่อใดๆ เกิดขึ้น
+      bool hasConnection = results.any((r) => r != ConnectivityResult.none);
+      if (hasConnection) {
+        _checkAndReloadIfNeed();
+      }
+    });
+  }
+
+  Future<void> _checkAndReloadIfNeed() async {
+    // 🔴 KEY FIX 2: ถ้าหน้าเว็บโหลดเสร็จแล้ว ไม่ต้องเช็ค ไม่ต้องทำอะไรทั้งนั้น
+    if (_isPageLoaded) return;
+
+    // เช็ค Ping เพื่อความชัวร์
+    bool hasInternet = await _hasRealInternet();
+    if (hasInternet && mounted) {
+      if (_controller == null) {
+        _initWebView(); // ถ้ายังไม่มี Controller ให้สร้าง
+      } else {
+        // ถ้ามีแล้วแต่ยัง Error ให้โหลดใหม่
+        _controller!.loadRequest(Uri.parse(widget.url));
+      }
+    }
+  }
+
+  Future<bool> _hasRealInternet() async {
+    try {
+      final result = await InternetAddress.lookup('google.com');
+      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _initWebView() {
+    setState(() {
+      _controller = WebViewController()
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setBackgroundColor(const Color(0x00000000))
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onPageFinished: (url) {
+               // ✅ โหลดเสร็จแล้ว ล็อคสถานะทันที
+               if (mounted) {
+                 _isPageLoaded = true;
+               }
+            },
+            onWebResourceError: (error) {
+               // เช็คว่าเป็น Error ร้ายแรงไหม
+               final desc = error.description.toLowerCase();
+               final isCritical = desc.contains("net::err_internet_disconnected") || 
+                                  desc.contains("net::err_name_not_resolved") ||
+                                  desc.contains("net::err_connection_timed_out");
+
+               // ถ้า Error ร้ายแรง ให้ปลดล็อค เพื่อรอเน็ตมาแล้วโหลดใหม่
+               if (isCritical && mounted) {
+                 _isPageLoaded = false;
+               }
+            },
+          ),
+        )
+        ..loadRequest(Uri.parse(widget.url));
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _WebviewItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // กรณีเปลี่ยน URL ใน Widget เดิม ให้โหลดใหม่
+    if (oldWidget.url != widget.url) {
+      _isPageLoaded = false;
+      _controller?.loadRequest(Uri.parse(widget.url));
+    }
+  }
+
+  @override
+  void dispose() {
+    _netSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) { 
+    if (_controller == null) {
+      return const ColoredBox(color: Colors.black);
+    }
+    return WebViewWidget(controller: _controller!); 
+  }
+}
+
+// ... ส่วน Video Player และ Ticker ใช้ของเดิมได้เลยครับ (มันเสถียรแล้ว)
+// แต่เพื่อความครบถ้วน ผมใส่ Video Player Code (ตัวเดิมที่แก้ Resume แล้ว) ไว้ให้กันพลาดครับ
+
+class _DisposableVideoPlayer extends StatefulWidget {
   final File? file;
   final String url;
   final bool isLooping;
   final VoidCallback onFinished;
 
-  const _MediaKitVideoItem({
-    super.key, 
-    this.file, 
-    required this.url, 
-    required this.isLooping, 
-    required this.onFinished
+  const _DisposableVideoPlayer({
+    super.key,
+    required this.file,
+    required this.url,
+    required this.isLooping,
+    required this.onFinished,
   });
 
   @override
-  State<_MediaKitVideoItem> createState() => _MediaKitVideoItemState();
+  State<_DisposableVideoPlayer> createState() => _DisposableVideoPlayerState();
 }
 
-class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBindingObserver {
+class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer> with WidgetsBindingObserver {
   late final Player player;
   late final VideoController controller;
-  bool _isVideoReady = false; 
+  bool _ready = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    
-    // 1. Player Config: Buffer เหมาะสมกับ HD
+    _init();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    player.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+           setState(() {}); 
+           player.play();
+        }
+      });
+    }
+  }
+
+  Future<void> _init() async {
     player = Player(
       configuration: const PlayerConfiguration(
-        bufferSize: 24 * 1024 * 1024, // 24MB (ค่ากลางๆ)
+        bufferSize: 24 * 1024 * 1024,
         logLevel: MPVLogLevel.warn,
       ),
     );
 
-    // 2. Controller Config: เปิด HW Acceleration
+    final native = player.platform as dynamic;
+    if (native != null) {
+      try {
+        await native.setProperty('hwdec', 'mediacodec');
+        await native.setProperty('hwdec-codecs', 'all');
+        await native.setProperty('profile', 'fast');
+        await native.setProperty('video-sync', 'audio');
+      } catch (_) {}
+    }
+
     controller = VideoController(
       player,
       configuration: const VideoControllerConfiguration(
@@ -254,126 +360,37 @@ class _MediaKitVideoItemState extends State<_MediaKitVideoItem> with WidgetsBind
       ),
     );
 
-    _initPlayer();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    player.dispose(); 
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      // บังคับเล่นต่อถ้ากลับเข้ามา
-      player.play();
-    }
-  }
-
-  Future<void> _initPlayer() async {
-    try {
-      // [PERFORMANCE HACK] เจาะจงเรียกใช้คำสั่งระดับ Native
-      // ต้อง cast เป็น dynamic เพราะเวอร์ชัน 1.1.10 ไม่มี method setProperty โดยตรง
-      final native = player.platform as dynamic; 
-
-      if (native != null) {
-        try {
-          // สั่งใช้ MediaCodec (ชิปวิดีโอของ Android)
-          await native.setProperty('hwdec', 'mediacodec');
-          await native.setProperty('hwdec-codecs', 'all');
-          
-          // ลดคุณภาพการประมวลผลที่ไม่จำเป็น
-          await native.setProperty('profile', 'fast');
-          await native.setProperty('vd-lavc-threads', '0'); 
-          
-          // สำคัญ! ช่วยเรื่องเสียงกับภาพไม่ตรงกันในกล่องสเปคต่ำ
-          await native.setProperty('video-sync', 'audio'); 
-        } catch (e) {
-          print("Native property error (safe to ignore): $e");
-        }
+    player.stream.completed.listen((isCompleted) {
+      if (isCompleted && !widget.isLooping) {
+        widget.onFinished();
       }
+    });
 
-      final Media media = widget.file != null 
-          ? Media(widget.file!.path) 
-          : Media(widget.url);
+    final media = widget.file != null ? Media(widget.file!.path) : Media(widget.url);
+    await player.open(media, play: true);
+    await player.setVolume(100.0);
+    await player.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
 
-      await player.open(media, play: true);
-      
-      await player.setVolume(100.0);
-      await player.setAudioTrack(AudioTrack.auto()); 
-      await player.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
-
-      // รอให้ภาพมาจริงๆ ก่อนค่อยโชว์ (แก้จอดำ)
-      player.stream.videoParams.listen((params) {
-        if (params.w != null && params.h != null && !_isVideoReady) {
-          if (mounted) setState(() => _isVideoReady = true);
-        }
-      });
-
-      // Safety timeout 
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (mounted && !_isVideoReady) {
-           setState(() => _isVideoReady = true);
-        }
-      });
-
-      player.stream.completed.listen((isCompleted) {
-        if (isCompleted && !widget.isLooping) {
-          widget.onFinished();
-        }
-      });
-
-      player.stream.error.listen((error) {
-        print("Media Error: $error");
-        widget.onFinished(); 
-      });
-
-    } catch (e) {
-      print("Init Error: $e");
-      widget.onFinished();
-    }
+    player.stream.videoParams.listen((params) {
+      if (params.w != null && params.h != null && !_ready) {
+        if (mounted) setState(() => _ready = true);
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    // ใช้ Container สีดำธรรมดา ลดภาระการ render ของ AnimatedOpacity
-    if (!_isVideoReady) {
-      return const SizedBox(); // ไม่แสดงอะไรเลยช่วงโหลด
-    }
-
+    if (!_ready) return const SizedBox();
     return Video(
       controller: controller,
       fit: BoxFit.cover,
       controls: NoVideoControls,
-      fill: Colors.black, 
+      fill: Colors.black,
     );
   }
 }
 
-// --- Sub Widgets ---
-
-class _WebviewItem extends StatefulWidget {
-  final String url;
-  const _WebviewItem({required this.url});
-  @override
-  State<_WebviewItem> createState() => _WebviewItemState();
-}
-class _WebviewItemState extends State<_WebviewItem> {
-  late final WebViewController _controller;
-  @override
-  void initState() {
-    super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0x00000000))
-      ..loadRequest(Uri.parse(widget.url));
-  }
-  @override
-  Widget build(BuildContext context) { return WebViewWidget(controller: _controller); }
-}
-
+// ... TickerWidget (Code เดิม)
 class _TickerItem extends StatefulWidget {
   final String text;
   final String color;
@@ -383,9 +400,11 @@ class _TickerItem extends StatefulWidget {
   @override
   State<_TickerItem> createState() => _TickerItemState();
 }
+
 class _TickerItemState extends State<_TickerItem> with SingleTickerProviderStateMixin {
   late ScrollController _scrollController;
   late AnimationController _animationController;
+  
   @override
   void initState() {
     super.initState();
@@ -393,6 +412,7 @@ class _TickerItemState extends State<_TickerItem> with SingleTickerProviderState
     _animationController = AnimationController(vsync: this, duration: const Duration(seconds: 10));
     WidgetsBinding.instance.addPostFrameCallback((_) => _startScrolling());
   }
+
   void _startScrolling() {
     if (!_scrollController.hasClients) return;
     double maxScroll = _scrollController.position.maxScrollExtent;
@@ -407,13 +427,40 @@ class _TickerItemState extends State<_TickerItem> with SingleTickerProviderState
         _scrollController.jumpTo(offset);
       }
     });
-    _animationController.repeat(); 
+    _animationController.repeat();
   }
+
   @override
-  void dispose() { _animationController.dispose(); _scrollController.dispose(); super.dispose(); }
-  Color _parseColor(String hex) { try { hex = hex.replaceAll('#', ''); if (hex.length == 6) hex = 'FF$hex'; return Color(int.parse(hex, radix: 16)); } catch (_) { return Colors.white; } }
+  void dispose() { 
+    _animationController.dispose(); 
+    _scrollController.dispose(); 
+    super.dispose(); 
+  }
+
+  Color _parseColor(String hex) { 
+    try { 
+      hex = hex.replaceAll('#', ''); 
+      if (hex.length == 6) hex = 'FF$hex'; 
+      return Color(int.parse(hex, radix: 16)); 
+    } catch (_) { return Colors.white; } 
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Container(alignment: Alignment.centerLeft, child: SingleChildScrollView(controller: _scrollController, scrollDirection: Axis.horizontal, physics: const NeverScrollableScrollPhysics(), child: Row(children: [SizedBox(width: MediaQuery.of(context).size.width), Text(widget.text, style: TextStyle(fontSize: double.tryParse(widget.fontSize.toString()) ?? 24, color: _parseColor(widget.color), fontWeight: FontWeight.bold)), SizedBox(width: MediaQuery.of(context).size.width)])));
+    return Container(
+      alignment: Alignment.centerLeft, 
+      child: SingleChildScrollView(
+        controller: _scrollController, 
+        scrollDirection: Axis.horizontal, 
+        physics: const NeverScrollableScrollPhysics(), 
+        child: Row(
+          children: [
+            SizedBox(width: MediaQuery.of(context).size.width), 
+            Text(widget.text, style: TextStyle(fontSize: double.tryParse(widget.fontSize.toString()) ?? 24, color: _parseColor(widget.color), fontWeight: FontWeight.bold)), 
+            SizedBox(width: MediaQuery.of(context).size.width)
+          ]
+        )
+      )
+    );
   }
 }

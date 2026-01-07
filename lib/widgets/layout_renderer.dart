@@ -21,44 +21,74 @@ class LayoutRenderer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final normalWidgets = layout.widgets.where((w) => w.id != fullscreenWidgetId).toList();
-    final fullscreenWidget = layout.widgets.where((w) => w.id == fullscreenWidgetId).firstOrNull;
+    final normalWidgets =
+        layout.widgets.where((w) => w.id != fullscreenWidgetId).toList();
+    final fullscreenWidget =
+        layout.widgets.where((w) => w.id == fullscreenWidgetId).firstOrNull;
 
-    return Container(
-      color: Colors.black,
-      child: Center(
-        child: FittedBox(
-          fit: BoxFit.cover,
-          alignment: Alignment.center,
-          child: Container(
-            width: layout.width,
-            height: layout.height,
-            color: _parseColor(layout.backgroundColor),
-            child: Stack(
-              children: [
-                ...normalWidgets.map((w) {
-                  return Positioned(
-                    left: w.x,
-                    top: w.y,
-                    width: w.width,
-                    height: w.height,
-                    child: _buildContentWithOverrideCheck(w),
-                  );
-                }),
+    // IMPORTANT:
+    // Avoid scaling the whole tree with FittedBox/Transform because PlatformView/Texture
+    // (Video/WebView) can disappear or fail to render on Android when transformed.
+    // Instead, scale the layout numerically (positions/sizes), keeping widgets untransformed.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxW = constraints.maxWidth;
+        final maxH = constraints.maxHeight;
 
-                if (fullscreenWidget != null)
+        // BoxFit.cover behavior
+        final scaleW = maxW / layout.width;
+        final scaleH = maxH / layout.height;
+        final scale = scaleW > scaleH ? scaleW : scaleH;
+
+        final scaledW = layout.width * scale;
+        final scaledH = layout.height * scale;
+
+        final dx = (maxW - scaledW) / 2;
+        final dy = (maxH - scaledH) / 2;
+
+        return Container(
+          color: Colors.black,
+          child: Center(
+            child: SizedBox(
+              width: maxW,
+              height: maxH,
+              child: Stack(
+                children: [
+                  // Background
                   Positioned(
-                    left: 0,
-                    top: 0,
-                    width: layout.width,
-                    height: layout.height,
-                    child: _buildContentWithOverrideCheck(fullscreenWidget),
+                    left: dx,
+                    top: dy,
+                    width: scaledW,
+                    height: scaledH,
+                    child: Container(color: _parseColor(layout.backgroundColor)),
                   ),
-              ],
+
+                  // Normal widgets
+                  ...normalWidgets.map((w) {
+                    return Positioned(
+                      left: dx + (w.x * scale),
+                      top: dy + (w.y * scale),
+                      width: w.width * scale,
+                      height: w.height * scale,
+                      child: _buildContentWithOverrideCheck(w),
+                    );
+                  }),
+
+                  // Fullscreen widget overlay
+                  if (fullscreenWidget != null)
+                    Positioned(
+                      left: dx,
+                      top: dy,
+                      width: scaledW,
+                      height: scaledH,
+                      child: _buildContentWithOverrideCheck(fullscreenWidget),
+                    ),
+                ],
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
