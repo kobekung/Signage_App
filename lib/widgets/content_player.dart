@@ -168,7 +168,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
 }
 
 // ==========================================
-// 🌐 WebView Item (Connectivity Plus + No Reload Lock)
+// 🌐 WebView Item (Watchdog Mode)
 // ==========================================
 class _WebviewItem extends StatefulWidget {
   final String url;
@@ -181,48 +181,42 @@ class _WebviewItem extends StatefulWidget {
 class _WebviewItemState extends State<_WebviewItem> {
   WebViewController? _controller;
   StreamSubscription? _netSubscription;
-  bool _isPageLoaded = false; // ตัวแปรสำคัญ: ล็อคไม่ให้รีโหลดซ้ำ
+  
+  // สถานะ: เริ่มต้นถือว่ายังโหลดไม่สำเร็จ
+  bool _loadSuccess = false; 
 
   @override
   void initState() {
     super.initState();
     _initWebView();
-    _listenToNetwork();
+    _startWatchdog();
   }
 
-  void _listenToNetwork() {
-    // ใช้ Connectivity Plus ดักจับการเปลี่ยนสถานะเน็ต
+  void _startWatchdog() {
+    // 1. ดักจับการเปลี่ยนสถานะเน็ต (Offline -> Online)
     _netSubscription = Connectivity().onConnectivityChanged.listen((results) {
-      // ถ้ามีการเชื่อมต่อใดๆ เกิดขึ้น
       bool hasConnection = results.any((r) => r != ConnectivityResult.none);
       if (hasConnection) {
-        _checkAndReloadIfNeed();
+        // เมื่อมีการเชื่อมต่อ ให้เช็คว่าต้องกู้คืนหน้าเว็บไหม
+        _recoverIfNeeded();
       }
     });
   }
 
-  Future<void> _checkAndReloadIfNeed() async {
-    // 🔴 KEY FIX 2: ถ้าหน้าเว็บโหลดเสร็จแล้ว ไม่ต้องเช็ค ไม่ต้องทำอะไรทั้งนั้น
-    if (_isPageLoaded) return;
+  Future<void> _recoverIfNeeded() async {
+    // ✋ ถ้าโหลดสำเร็จอยู่แล้ว ไม่ต้องทำอะไร (ป้องกันรีเฟรชซ้ำ)
+    if (_loadSuccess) return;
 
-    // เช็ค Ping เพื่อความชัวร์
-    bool hasInternet = await _hasRealInternet();
-    if (hasInternet && mounted) {
-      if (_controller == null) {
-        _initWebView(); // ถ้ายังไม่มี Controller ให้สร้าง
-      } else {
-        // ถ้ามีแล้วแต่ยัง Error ให้โหลดใหม่
+    // เช็ค Ping Google เพื่อความชัวร์ว่าออกเน็ตได้จริง
+    bool hasRealNet = await _hasInternet();
+    
+    if (hasRealNet && mounted) {
+      print("🌐 Internet back! Reloading WebView...");
+      if (_controller != null) {
         _controller!.loadRequest(Uri.parse(widget.url));
+      } else {
+        _initWebView();
       }
-    }
-  }
-
-  Future<bool> _hasRealInternet() async {
-    try {
-      final result = await InternetAddress.lookup('google.com');
-      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
-    } catch (_) {
-      return false;
     }
   }
 
@@ -234,21 +228,20 @@ class _WebviewItemState extends State<_WebviewItem> {
         ..setNavigationDelegate(
           NavigationDelegate(
             onPageFinished: (url) {
-               // ✅ โหลดเสร็จแล้ว ล็อคสถานะทันที
-               if (mounted) {
-                 _isPageLoaded = true;
-               }
+               // ✅ โหลดเสร็จจริง -> ล็อคสถานะ (เพื่อไม่ให้รีโหลดซ้ำ)
+               if (mounted) setState(() => _loadSuccess = true);
             },
             onWebResourceError: (error) {
-               // เช็คว่าเป็น Error ร้ายแรงไหม
+               // ❌ ถ้าเจอ Error ร้ายแรง -> ปลดล็อคสถานะ (เพื่อให้โอกาสโหลดใหม่เมื่อเน็ตมา)
                final desc = error.description.toLowerCase();
                final isCritical = desc.contains("net::err_internet_disconnected") || 
                                   desc.contains("net::err_name_not_resolved") ||
+                                  desc.contains("net::err_address_unreachable") ||
                                   desc.contains("net::err_connection_timed_out");
 
-               // ถ้า Error ร้ายแรง ให้ปลดล็อค เพื่อรอเน็ตมาแล้วโหลดใหม่
                if (isCritical && mounted) {
-                 _isPageLoaded = false;
+                 setState(() => _loadSuccess = false);
+                 // เมื่อสถานะเป็น false, ครั้งถัดไปที่ onConnectivityChanged ทำงาน มันจะสั่ง reload
                }
             },
           ),
@@ -257,13 +250,12 @@ class _WebviewItemState extends State<_WebviewItem> {
     });
   }
 
-  @override
-  void didUpdateWidget(covariant _WebviewItem oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // กรณีเปลี่ยน URL ใน Widget เดิม ให้โหลดใหม่
-    if (oldWidget.url != widget.url) {
-      _isPageLoaded = false;
-      _controller?.loadRequest(Uri.parse(widget.url));
+  Future<bool> _hasInternet() async {
+    try {
+      final result = await InternetAddress.lookup('google.com');
+      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
     }
   }
 
