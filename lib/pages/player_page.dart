@@ -109,6 +109,7 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+
   // ============================
   // 1. Location Logic (Looping Support)
   // ============================
@@ -237,6 +238,26 @@ class _PlayerPageState extends State<PlayerPage> {
       setState(() => _playlistFullscreenId = null);
     }
   }
+    Future<void> _clearOwnerAndExit() async {
+  try {
+    const platform = MethodChannel('com.example.signage_app/kiosk');
+    
+    // 1. สั่งปลด Kiosk ก่อน (กันเหนียว)
+    await platform.invokeMethod('stopKioskMode');
+    
+    // 2. สั่งล้าง Device Owner
+    await platform.invokeMethod('clearDeviceOwner');
+    
+    print("✅ Device Owner Cleared! You can now uninstall the app.");
+  } catch (e) {
+    print("❌ Error clearing owner: $e");
+  }
+
+  // 3. ปิดแอป
+  if (mounted) {
+    SystemNavigator.pop();
+  }
+}
 
   // [Modified] เปลี่ยนชื่อฟังก์ชันจาก _showExitPinDialog เป็น _handleAdminMenu
   Future<void> _handleAdminMenu() async {
@@ -337,8 +358,8 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
   Timer? _timer;
-  int _countdown = 10; 
-  bool _isUnlocked = false; // [Added] สถานะปลดล็อค (ถ้าใส่รหัสถูกจะเปลี่ยนหน้า)
+  int _countdown = 10;
+  bool _isUnlocked = false;
 
   @override
   void initState() {
@@ -347,21 +368,18 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
       _focusNode.requestFocus();
     });
 
-    // เริ่มนับถอยหลัง 10 วิ (เฉพาะตอนยังไม่ปลดล็อค)
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
           if (_isUnlocked) {
-             timer.cancel(); // ถ้าปลดล็อคแล้ว ไม่ต้องนับ
-             return;
+            timer.cancel();
+            return;
           }
-
           if (_countdown > 0) {
             _countdown--;
           } else {
-            // หมดเวลา -> ปิด Dialog
             timer.cancel();
-            Navigator.of(context).pop(); 
+            Navigator.of(context).pop();
           }
         });
       }
@@ -377,12 +395,34 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
   }
 
   void _onPinChanged(String value) {
-    if (value == '000000') { 
-      _timer?.cancel(); // หยุดนับเวลาทันที
+    if (value == '000000') {
+      _timer?.cancel();
       setState(() {
-        _isUnlocked = true; // [Key Logic] เปลี่ยนสถานะเป็น Unlock
+        _isUnlocked = true;
       });
-      // ไม่ต้องสั่ง pop หรือ SystemNavigator.pop() ที่นี่ รอ user กดปุ่มเลือกเอง
+    }
+  }
+
+  // ✅ 1. ต้องวางฟังก์ชันนี้ไว้ตรงนี้ (ใน class State ก่อน build)
+  Future<void> _clearOwnerAndExit() async {
+    try {
+      // ⚠️ เช็คชื่อ package ให้ตรงกับโปรเจกต์ (com.example.signage_app หรือ com.example.driver_system)
+      const platform = MethodChannel('com.example.signage_app/kiosk');
+      
+      // 1. สั่งปลด Kiosk ก่อน
+      await platform.invokeMethod('stopKioskMode');
+      
+      // 2. สั่งล้าง Device Owner (ถอนสิทธิ์ Admin)
+      await platform.invokeMethod('clearDeviceOwner');
+      
+      print("✅ Device Owner Cleared!");
+    } catch (e) {
+      print("❌ Error clearing owner: $e");
+    }
+
+    // 3. ปิดแอป
+    if (mounted) {
+      SystemNavigator.pop();
     }
   }
 
@@ -407,85 +447,46 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
           children: [
             // ปุ่ม Check Update
             ElevatedButton.icon(
-  onPressed: () => Navigator.pop(context, 'update'),
-  icon: const Icon(Icons.system_update),
-  label: const Text('Check for App Update'),
-  style: ButtonStyle(
-    padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 15)),
-    foregroundColor: WidgetStateProperty.all(Colors.white),
-
-    // --- 1. จัดการสีพื้นหลัง ---
-    backgroundColor: WidgetStateProperty.resolveWith<Color>((states) {
-      // เพิ่ม WidgetState.focused เข้าไปในเงื่อนไข
-      if (states.contains(WidgetState.hovered) || 
-          states.contains(WidgetState.pressed) || 
-          states.contains(WidgetState.focused)) { // <--- สำคัญสำหรับรีโมททีวี
-        return Colors.green; 
-      }
-      return Colors.blue; // สีปกติ
-    }),
-
-    // --- 2. จัดการสีเงา (Overlay) ---
-    overlayColor: WidgetStateProperty.resolveWith<Color?>((states) {
-      if (states.contains(WidgetState.hovered) || states.contains(WidgetState.focused)) {
-        return Colors.green.shade600; 
-      }
-      return null;
-    }),
-
-    // --- 3. จัดการเงา (Elevation) ---
-    elevation: WidgetStateProperty.resolveWith<double>((states) {
-      if (states.contains(WidgetState.hovered) || states.contains(WidgetState.focused)) {
-        return 10.0; // ลอยขึ้นเมื่อโฟกัส
-      }
-      return 2.0;
-    }),
-
-    // --- 4. (แนะนำเพิ่ม) เส้นขอบขาวเมื่อโฟกัส เพื่อให้เห็นชัดบนทีวี ---
-    side: WidgetStateProperty.resolveWith<BorderSide>((states) {
-      if (states.contains(WidgetState.focused)) {
-        return const BorderSide(color: Colors.white, width: 3); // ขอบขาวหนาๆ
-      }
-      return BorderSide.none;
-    }),
-  ),
-),
-            const SizedBox(height: 15),
-            // ปุ่ม Exit App
+              onPressed: () => Navigator.pop(context, 'update'),
+              icon: const Icon(Icons.system_update),
+              label: const Text('Check for App Update'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+              ),
+            ),
+            const SizedBox(height: 10),
+            
+            // ปุ่ม Exit App (ปกติ)
             ElevatedButton.icon(
-  onPressed: () => Navigator.pop(context, 'exit'),
-  icon: const Icon(Icons.exit_to_app),
-  label: const Text('Exit Application'),
-  style: ButtonStyle(
-    padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 15)),
-    foregroundColor: WidgetStateProperty.all(Colors.white),
-    
-    // จัดการสีพื้นหลัง:
-    backgroundColor: WidgetStateProperty.resolveWith<Color>((states) {
-      // เพิ่ม WidgetState.focused เข้าไปสำหรับรีโมททีวี
-      if (states.contains(WidgetState.hovered) || 
-          states.contains(WidgetState.pressed) ||
-          states.contains(WidgetState.focused)) { // <--- เพิ่มตรงนี้ครับ
-        return Colors.green; 
-      }
-      // สถานะปกติ -> เป็นสีแดง
-      return Colors.red; 
-    }),
-    
-    // (Optional) เพิ่มเส้นขอบตอน Focus ให้ชัดขึ้นไปอีก (Android TV นิยมทำ)
-    side: WidgetStateProperty.resolveWith<BorderSide>((states) {
-      if (states.contains(WidgetState.focused)) {
-        return const BorderSide(color: Colors.white, width: 3);
-      }
-      return BorderSide.none;
-    }),
-  ),
-),
+              onPressed: () => Navigator.pop(context, 'exit'),
+              icon: const Icon(Icons.exit_to_app),
+              label: const Text('Exit Application'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.grey,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+              ),
+            ),
+            //  const SizedBox(height: 10),
+
+            //  // ✅ 2. ปุ่มล้าง Admin (เรียกฟังก์ชันที่สร้างไว้ข้อ 1)
+            //  ElevatedButton.icon(
+            //   onPressed: _clearOwnerAndExit, // ไม่แดงแล้ว
+            //   icon: const Icon(Icons.delete_forever),
+            //   label: const Text('CLEAR ADMIN & EXIT'),
+            //   style: ElevatedButton.styleFrom(
+            //     backgroundColor: Colors.red, // สีแดงเตือน
+            //     foregroundColor: Colors.white,
+            //     padding: const EdgeInsets.symmetric(vertical: 15),
+            //   ),
+            // ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(), 
+            onPressed: () => Navigator.of(context).pop(),
             child: const Text("Close"),
           ),
         ],
@@ -496,6 +497,7 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
     // [View 1] หน้าใส่ PIN (ค่าเริ่มต้น)
     // ----------------------------------------
     return AlertDialog(
+      // ... (ส่วนใส่ PIN เหมือนเดิม) ...
       backgroundColor: Colors.white,
       title: Row(
         children: [
@@ -513,9 +515,9 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
             controller: _controller,
             focusNode: _focusNode,
             autofocus: true,
-            obscureText: true, 
+            obscureText: true,
             keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly], 
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             onChanged: _onPinChanged,
             style: const TextStyle(color: Colors.black, fontSize: 24, letterSpacing: 5),
             textAlign: TextAlign.center,
@@ -530,7 +532,7 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(), 
+          onPressed: () => Navigator.of(context).pop(),
           child: const Text("Cancel"),
         ),
       ],
