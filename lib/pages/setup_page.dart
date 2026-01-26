@@ -200,10 +200,25 @@ class _SetupPageState extends State<SetupPage> {
               onPressed: _isLoading ? null : _checkUpdate,
               icon: const Icon(Icons.system_update),
               label: const Text('Check for Update'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 15),
-                foregroundColor: Colors.blueAccent,
-                side: const BorderSide(color: Colors.blueAccent),
+              style: ButtonStyle(
+                padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 15)),
+                foregroundColor: WidgetStateProperty.all(Colors.blueAccent),
+                // จัดการเส้นขอบตามสถานะ
+                side: WidgetStateProperty.resolveWith<BorderSide>((states) {
+                  // ถ้าเมาส์วางอยู่ (Hovered) ให้เส้นหนา 2.5
+                  if (states.contains(WidgetState.hovered)) {
+                    return const BorderSide(color: Colors.blueAccent, width: 2.5);
+                  }
+                  // ปกติเส้นหนา 1.0 (หรือ default)
+                  return const BorderSide(color: Colors.blueAccent, width: 1.0);
+                }),
+                // เพิ่มสีพื้นหลังจางๆ ให้ชัดขึ้นด้วย (Optional)
+                overlayColor: WidgetStateProperty.resolveWith<Color?>((states) {
+                  if (states.contains(WidgetState.hovered)) {
+                    return Colors.blueAccent.withOpacity(0.1); // สีฟ้าจางๆ พื้นหลัง
+                  }
+                  return null;
+                }),
               ),
             ),
 

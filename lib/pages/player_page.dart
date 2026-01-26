@@ -396,27 +396,80 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
           children: [
             // ปุ่ม Check Update
             ElevatedButton.icon(
-              onPressed: () => Navigator.pop(context, 'update'), // ส่งค่า 'update' กลับไป
-              icon: const Icon(Icons.system_update),
-              label: const Text('Check for App Update'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 15),
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-              ),
-            ),
+  onPressed: () => Navigator.pop(context, 'update'),
+  icon: const Icon(Icons.system_update),
+  label: const Text('Check for App Update'),
+  style: ButtonStyle(
+    padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 15)),
+    foregroundColor: WidgetStateProperty.all(Colors.white),
+
+    // --- 1. จัดการสีพื้นหลัง ---
+    backgroundColor: WidgetStateProperty.resolveWith<Color>((states) {
+      // เพิ่ม WidgetState.focused เข้าไปในเงื่อนไข
+      if (states.contains(WidgetState.hovered) || 
+          states.contains(WidgetState.pressed) || 
+          states.contains(WidgetState.focused)) { // <--- สำคัญสำหรับรีโมททีวี
+        return Colors.green; 
+      }
+      return Colors.blue; // สีปกติ
+    }),
+
+    // --- 2. จัดการสีเงา (Overlay) ---
+    overlayColor: WidgetStateProperty.resolveWith<Color?>((states) {
+      if (states.contains(WidgetState.hovered) || states.contains(WidgetState.focused)) {
+        return Colors.green.shade600; 
+      }
+      return null;
+    }),
+
+    // --- 3. จัดการเงา (Elevation) ---
+    elevation: WidgetStateProperty.resolveWith<double>((states) {
+      if (states.contains(WidgetState.hovered) || states.contains(WidgetState.focused)) {
+        return 10.0; // ลอยขึ้นเมื่อโฟกัส
+      }
+      return 2.0;
+    }),
+
+    // --- 4. (แนะนำเพิ่ม) เส้นขอบขาวเมื่อโฟกัส เพื่อให้เห็นชัดบนทีวี ---
+    side: WidgetStateProperty.resolveWith<BorderSide>((states) {
+      if (states.contains(WidgetState.focused)) {
+        return const BorderSide(color: Colors.white, width: 3); // ขอบขาวหนาๆ
+      }
+      return BorderSide.none;
+    }),
+  ),
+),
             const SizedBox(height: 15),
             // ปุ่ม Exit App
             ElevatedButton.icon(
-              onPressed: () => Navigator.pop(context, 'exit'), // ส่งค่า 'exit' กลับไป
-              icon: const Icon(Icons.exit_to_app),
-              label: const Text('Exit Application'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 15),
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-              ),
-            ),
+  onPressed: () => Navigator.pop(context, 'exit'),
+  icon: const Icon(Icons.exit_to_app),
+  label: const Text('Exit Application'),
+  style: ButtonStyle(
+    padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 15)),
+    foregroundColor: WidgetStateProperty.all(Colors.white),
+    
+    // จัดการสีพื้นหลัง:
+    backgroundColor: WidgetStateProperty.resolveWith<Color>((states) {
+      // เพิ่ม WidgetState.focused เข้าไปสำหรับรีโมททีวี
+      if (states.contains(WidgetState.hovered) || 
+          states.contains(WidgetState.pressed) ||
+          states.contains(WidgetState.focused)) { // <--- เพิ่มตรงนี้ครับ
+        return Colors.green; 
+      }
+      // สถานะปกติ -> เป็นสีแดง
+      return Colors.red; 
+    }),
+    
+    // (Optional) เพิ่มเส้นขอบตอน Focus ให้ชัดขึ้นไปอีก (Android TV นิยมทำ)
+    side: WidgetStateProperty.resolveWith<BorderSide>((states) {
+      if (states.contains(WidgetState.focused)) {
+        return const BorderSide(color: Colors.white, width: 3);
+      }
+      return BorderSide.none;
+    }),
+  ),
+),
           ],
         ),
         actions: [
