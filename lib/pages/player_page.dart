@@ -49,6 +49,7 @@ class _PlayerPageState extends State<PlayerPage> {
   // Auto Update State
   Timer? _updateCheckTimer;
   bool _isDownloadingUpdate = false;
+  Timer? _apkUpdateTimer;
 
   // Normal Playlist Fullscreen State
   String? _playlistFullscreenId;
@@ -68,14 +69,24 @@ class _PlayerPageState extends State<PlayerPage> {
     _checkBusLocation(); 
 
     // 2. Check Update (5m)
-    _updateCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) => _checkForLayoutUpdate());
+    _updateCheckTimer = Timer.periodic(const Duration(minutes: 5), (_) => _checkForLayoutUpdate());
+    // _apkUpdateTimer = Timer.periodic(const Duration(minutes: 30), (_) {
+    //     VersionUpdater.checkAndMaybeUpdate(
+    //         context, 
+    //         silent: true, 
+    //         isAutoUpdate: true // สั่งให้ Auto Install เลยถ้ามี
+    //     );
+    // });
+    Future.delayed(const Duration(seconds: 10), () {
+        VersionUpdater.checkAndMaybeUpdate(context, silent: true, isAutoUpdate: true);
+    });
   }
 
   @override
   void dispose() {
     // ปลดล็อค Kiosk Mode เมื่อออกจากหน้านี้ (เผื่อกรณีออกด้วยวิธีอื่น)
     _setKioskMode(false);
-
+    _apkUpdateTimer?.cancel(); 
     _locationPollTimer?.cancel();
     _updateCheckTimer?.cancel();
     super.dispose();
