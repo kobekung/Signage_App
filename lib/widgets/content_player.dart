@@ -407,6 +407,7 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     final p = Player(
       configuration: const PlayerConfiguration(
         bufferSize: 4 * 1024 * 1024,
+        // bufferSize: 32 * 1024 * 1024, // กล่องจีนอาจใช้เท่านี้ได้
         logLevel: MPVLogLevel.warn,
       ),
     );
@@ -416,6 +417,7 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     if (native != null) {
       try {
         await native.setProperty('hwdec', 'no'); // สำคัญมาก (กันจอดำ)
+        // await native.setProperty('hwdec', 'mediacodec'); // สำหรับกล่องจีน
         await native.setProperty('hwdec-codecs', 'all');
         await native.setProperty('profile', 'fast');
         await native.setProperty('video-sync', 'audio');

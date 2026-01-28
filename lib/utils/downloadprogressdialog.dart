@@ -4,8 +4,8 @@ class DownloadProgressDialog extends StatelessWidget {
   const DownloadProgressDialog({
     super.key,
     required this.title,
-    required this.percent, // 0.0..1.0 หรือ null (indeterminate)
-    required this.detail,  // ข้อความรายละเอียด เช่น "12.3 / 45.7 MB • 1.2 MB/s"
+    required this.percent,
+    required this.detail,
     required this.onCancel,
   });
 
@@ -16,75 +16,80 @@ class DownloadProgressDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: SizedBox(
-          width: 420,
+    // ❌ ลบ Dialog widget ออก
+    // ✅ ใช้ Card หรือ Material แทน เพื่อให้จัดแต่งขนาดได้เอง
+    return Material( 
+      color: Colors.transparent,
+      child: Card(
+        elevation: 10, // ใส่เงาให้ดูลอยขึ้นมา
+        color: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: Container(
+          // กำหนดความกว้างให้เล็กลง เหมาะกับการอยู่มุมจอ
+          width: 320, 
+          padding: const EdgeInsets.all(16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start, // จัดชิดซ้าย
             children: [
               Text(title,
                   style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
                   )),
-              const SizedBox(height: 16),
-
-              // % ตัวใหญ่
-              ValueListenableBuilder<double?>(
-                valueListenable: percent,
-                builder: (_, p, __) {
-                  final pctTxt =
-                      p == null ? '…' : '${(p * 100).toStringAsFixed(0)}%';
-                  return Text(
-                    pctTxt,
-                    style: const TextStyle(
-                      fontSize: 36,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.5,
-                    ),
-                  );
-                },
-              ),
               const SizedBox(height: 12),
 
-              // แถบความคืบหน้า
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: SizedBox(
-                  height: 12,
-                  child: ValueListenableBuilder<double?>(
+              // แถบ Progress + ตัวเลข %
+              Row(
+                children: [
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: SizedBox(
+                        height: 8, // ลดความสูงให้ดูมินิมอล
+                        child: ValueListenableBuilder<double?>(
+                          valueListenable: percent,
+                          builder: (_, p, __) {
+                            return LinearProgressIndicator(
+                              value: p,
+                              backgroundColor: Colors.grey[200],
+                              valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ValueListenableBuilder<double?>(
                     valueListenable: percent,
                     builder: (_, p, __) {
-                      return LinearProgressIndicator(
-                        value: p, // null = indeterminate
-                        minHeight: 12,
+                      final pctTxt = p == null ? '...' : '${(p * 100).toStringAsFixed(0)}%';
+                      return Text(
+                        pctTxt,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue,
+                        ),
                       );
                     },
                   ),
-                ),
+                ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
 
-              // รายละเอียด: MB / MB • MB/s
+              // รายละเอียด
               ValueListenableBuilder<String>(
                 valueListenable: detail,
                 builder: (_, txt, __) => Text(
                   txt,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 13, color: Colors.black54),
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const SizedBox(height: 16),
-
-              // Row(
-              //   mainAxisAlignment: MainAxisAlignment.end,
-              //   children: [
-              //     TextButton(onPressed: onCancel, child: const Text('ยกเลิก')),
-              //   ],
-              // ),
             ],
           ),
         ),

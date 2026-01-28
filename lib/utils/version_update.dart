@@ -25,6 +25,7 @@ enum UpdateCheckResult {
 }
 
 class VersionUpdater {
+  static OverlayEntry? _progressOverlay;
   static Future<UpdateCheckResult> checkAndMaybeUpdate(
     BuildContext context, {
     bool silent = false,
@@ -211,17 +212,34 @@ static Future<void> _downloadAndInstall(
       DownloadUI.start();
       
       // แสดง Dialog Progress
+      // if (context.mounted) {
+      //     showDialog(
+      //       context: context,
+      //       barrierDismissible: false,
+      //       builder: (_) => DownloadProgressDialog(
+      //         title: 'กำลังอัปเดตระบบ...',
+      //         percent: DownloadUI.percent,
+      //         detail: DownloadUI.detail,
+      //         onCancel: () { },
+      //       ),
+      //     );
+      // }
       if (context.mounted) {
-          showDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (_) => DownloadProgressDialog(
+        _removeOverlay(); // ลบอันเก่าออกก่อน (กันเหนียว)
+        _progressOverlay = OverlayEntry(
+          builder: (context) => Positioned(
+            bottom: 30, // ห่างจากขอบล่าง 30
+            right: 30,  // ห่างจากขอบขวา 30
+            child: DownloadProgressDialog(
               title: 'กำลังอัปเดตระบบ...',
               percent: DownloadUI.percent,
               detail: DownloadUI.detail,
-              onCancel: () { },
+              onCancel: () {},
             ),
-          );
+          ),
+        );
+        // สั่งแสดงบนหน้าจอ
+        Overlay.of(context).insert(_progressOverlay!);
       }
 
       // เริ่มโหลด
@@ -273,6 +291,7 @@ static Future<void> _downloadAndInstall(
         
         // ✅ ถ้าสำเร็จ ให้ return ออกไปเลย (ไม่ต้องทำบรรทัดล่างต่อ)
         // ปล่อยให้ Android จัดการฆ่าแอปเอง
+        _removeOverlay();
         return; 
       } catch (e) {
         print("Silent install failed, falling back to normal install: $e");
@@ -281,16 +300,26 @@ static Future<void> _downloadAndInstall(
 
       // 3. (Fallback) ถ้าข้างบนพัง หรือไม่ใช่ Device Owner ให้ใช้วิธีปกติ
       // ปิด Dialog ก่อน เพราะวิธีนี้จะมี UI ของ Android เด้งมาทับ
-      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
-
-      await InstallPlugin.installApk(savePath);
+     _removeOverlay(); // ปิดป้ายมุมจอก่อน
+      await InstallPlugin.installApk(savePath); // เรียกตัวติดตั้งของ Android
 
     } on DioException catch (e) {
-      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+      _removeOverlay(); // ✅ ปิดป้ายมุมจอ
+      // ❌ ลบ Navigator.pop ออก
       if (!CancelToken.isCancel(e)) _toast('ดาวน์โหลดล้มเหลว: ${e.message}');
+      
     } catch (e) {
-      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+      _removeOverlay(); // ✅ ปิดป้ายมุมจอ
+      // ❌ ลบ Navigator.pop ออก
       _toast('ติดตั้งล้มเหลว: $e');
+    }
+  }
+  static void _removeOverlay() {
+    try {
+      _progressOverlay?.remove();
+      _progressOverlay = null;
+    } catch (_) {
+      // ดักไว้เผื่อ overlay ถูก remove ไปแล้ว
     }
   }
 
