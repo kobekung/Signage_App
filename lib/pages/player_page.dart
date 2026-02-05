@@ -62,30 +62,35 @@ class _PlayerPageState extends State<PlayerPage> {
     print("🚀 Player Start: Bus ${widget.busId}, Com ${widget.companyId}");
     
     // 0. เปิด Kiosk Mode (ล็อคปุ่ม Home)
-    _setKioskMode(true);
+    // _setKioskMode(true);
 
     // 1. Check Location (30s)
     _locationPollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkBusLocation());
-    _checkBusLocation(); 
 
     // 2. Check Update (5m)
     _updateCheckTimer = Timer.periodic(const Duration(minutes: 5), (_) => _checkForLayoutUpdate());
-    // _apkUpdateTimer = Timer.periodic(const Duration(minutes: 30), (_) {
-    //     VersionUpdater.checkAndMaybeUpdate(
-    //         context, 
-    //         silent: true, 
-    //         isAutoUpdate: true // สั่งให้ Auto Install เลยถ้ามี
-    //     );
-    // });
-    Future.delayed(const Duration(seconds: 10), () {
-        VersionUpdater.checkAndMaybeUpdate(context, silent: true, isAutoUpdate: true);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+        // เช็ค Location ทันที 1 รอบ (ไม่ต้องรอ 30 วิ)
+        _checkBusLocation(); 
+        
+        // รอ 5 วินาที ให้วิดีโอเล่นนิ่งๆ ก่อน ค่อยเช็คอัปเดตแอป (กันแย่งเน็ต)
+        Future.delayed(const Duration(seconds: 5), () {
+             if (mounted) {
+                 VersionUpdater.checkAndMaybeUpdate(
+                    context, 
+                    silent: true,      // ไม่ต้องโชว์ Loading
+                    isAutoUpdate: true // ถ้ามีใหม่ ให้โหลดเงียบๆ เลย
+                 );
+             }
+        });
     });
   }
 
   @override
   void dispose() {
     // ปลดล็อค Kiosk Mode เมื่อออกจากหน้านี้ (เผื่อกรณีออกด้วยวิธีอื่น)
-    _setKioskMode(false);
+    // _setKioskMode(false);
     _apkUpdateTimer?.cancel(); 
     _locationPollTimer?.cancel();
     _updateCheckTimer?.cancel();
@@ -270,7 +275,7 @@ class _PlayerPageState extends State<PlayerPage> {
 
     if (action == 'exit') {
        // ถ้าเลือก Exit -> ปิด Kiosk และออกแอพ
-       await _setKioskMode(false);
+      //  await _setKioskMode(false);
        if (mounted) SystemNavigator.pop();
     } else if (action == 'update') {
        // ถ้าเลือก Update -> เรียก VersionUpdater
@@ -469,19 +474,19 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
                 padding: const EdgeInsets.symmetric(vertical: 15),
               ),
             ),
-            //  const SizedBox(height: 10),
+             const SizedBox(height: 10),
 
-            //  // ✅ 2. ปุ่มล้าง Admin (เรียกฟังก์ชันที่สร้างไว้ข้อ 1)
-            //  ElevatedButton.icon(
-            //   onPressed: _clearOwnerAndExit, // ไม่แดงแล้ว
-            //   icon: const Icon(Icons.delete_forever),
-            //   label: const Text('CLEAR ADMIN & EXIT'),
-            //   style: ElevatedButton.styleFrom(
-            //     backgroundColor: Colors.red, // สีแดงเตือน
-            //     foregroundColor: Colors.white,
-            //     padding: const EdgeInsets.symmetric(vertical: 15),
-            //   ),
-            // ),
+             // ✅ 2. ปุ่มล้าง Admin (เรียกฟังก์ชันที่สร้างไว้ข้อ 1)
+             ElevatedButton.icon(
+              onPressed: _clearOwnerAndExit, // ไม่แดงแล้ว
+              icon: const Icon(Icons.delete_forever),
+              label: const Text('CLEAR ADMIN & EXIT'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red, // สีแดงเตือน
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+              ),
+            ),
           ],
         ),
         actions: [

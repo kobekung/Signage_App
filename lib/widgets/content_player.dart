@@ -115,30 +115,29 @@ class _ContentPlayerState extends State<ContentPlayer> {
     // 🎥 VIDEO
     // ===========================
     if (type == 'video') {
-  final url = item['url'];
-  if (url == null || (url is String && url.trim().isEmpty)) {
-    _nextItem();
-    return;
-  }
+      final url = item['url'];
+      if (url == null || (url is String && url.trim().isEmpty)) {
+        _nextItem();
+        return;
+      }
 
-  File? cachedFile;
-  try {
-    cachedFile = await PreloadService.getCachedFile(url);
-  } catch (_) {}
+      File? cachedFile;
+      try {
+        cachedFile = await PreloadService.getCachedFile(url);
+      } catch (_) {}
 
-  final videoWidget = _DisposableVideoPlayer(
-    key: UniqueKey(), // reset decoder
-    file: cachedFile,
-    url: url.toString(),
-    isLooping: (!widget.isTriggerMode && _playlist.length == 1),
-    onFinished: _nextItem,
-  );
+      final videoWidget = _DisposableVideoPlayer(
+        key: UniqueKey(), // reset decoder
+        file: cachedFile,
+        url: url.toString(),
+        isLooping: (!widget.isTriggerMode && _playlist.length == 1),
+        onFinished: _nextItem,
+      );
 
-  // ✅ ใส่ widget ทันที (สำคัญมาก)
-  setState(() => _currentContent = videoWidget);
-  return;
-}
-
+      // ✅ ใส่ widget ทันที (สำคัญมาก)
+      setState(() => _currentContent = videoWidget);
+      return;
+    }
 
     // ===========================
     // 🖼️ IMAGE / WEBVIEW / TICKER / TEXT
@@ -218,7 +217,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
 }
 
 // ==========================================
-// 🌐 WebView Host (Keep Alive + Recover Only When Network Error)
+// 🌐 WebView Host (Smart Health Check)
 // ==========================================
 class _WebviewHost extends StatefulWidget {
   final String url;
@@ -228,69 +227,110 @@ class _WebviewHost extends StatefulWidget {
   State<_WebviewHost> createState() => _WebviewHostState();
 }
 
-class _WebviewHostState extends State<_WebviewHost> {
+class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver {
   WebViewController? _controller;
-  StreamSubscription? _netSubscription;
-
-  // ✅ reload เฉพาะตอน “เคยพังเพราะเน็ต”
-  bool _needRecover = false;
+  Timer? _healthCheckTimer;
+  
+  // สถานะการทำงาน
+  bool _hasInternet = false;    // เน็ตมายัง?
+  bool _isPageLoaded = false;   // โหลดหน้าเว็บเสร็จยัง?
+  bool _isInit = false;         // WebView สร้างเสร็จยัง?
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initWebView();
-    _listenToNetwork();
+    
+    // ✅ เริ่มระบบเช็คชีพจรเน็ตทันที
+    _startHealthCheck();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _healthCheckTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // แอปตื่นมา รีเซ็ตค่าแล้วเช็คใหม่ทันที
+      setState(() {
+         _hasInternet = false;
+         _isPageLoaded = false;
+      });
+      _startHealthCheck();
+    }
   }
 
   void _initWebView() {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0x00000000))
+      ..setBackgroundColor(const Color(0xFF000000)) // พื้นหลังดำ
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (_) {
-            // ✅ หน้าเดินปกติแล้ว
-            _needRecover = false;
+            // โหลดเสร็จจริง -> ปลดตัวโหลดออก
+            if (mounted) setState(() => _isPageLoaded = true);
           },
           onWebResourceError: (error) {
-            final desc = error.description.toLowerCase();
-
-            final isNetworkError =
-                desc.contains("net::err_internet_disconnected") ||
-                desc.contains("net::err_name_not_resolved") ||
-                desc.contains("net::err_address_unreachable") ||
-                desc.contains("net::err_connection_timed_out") ||
-                desc.contains("net::err_connection_closed");
-
-            if (isNetworkError) {
-              _needRecover = true;
+            // ถ้า WebView แจ้งว่าพัง ให้ถือว่าเน็ตหลุด
+            print("WebView Error: ${error.description}");
+            if (mounted && _isPageLoaded) {
+               setState(() => _isPageLoaded = false);
             }
           },
         ),
-      )
-      ..loadRequest(Uri.parse(widget.url));
-
-    setState(() {});
+      );
+      // ยังไม่สั่ง loadRequest ตรงนี้! รอให้เช็คเน็ตผ่านก่อน
+      setState(() => _isInit = true);
   }
 
-  void _listenToNetwork() {
-    _netSubscription =
-        Connectivity().onConnectivityChanged.listen((results) async {
-      final hasConnection = results.any((r) => r != ConnectivityResult.none);
-      if (!hasConnection) return;
+  // 🔄 เช็คเน็ตทุกๆ 5 วินาที (Ping Google)
+  void _startHealthCheck() {
+    _healthCheckTimer?.cancel();
+    _healthCheckTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
 
-      // ✅ ถ้าไม่เคยพังเพราะเน็ต ห้าม reload
-      if (!_needRecover) return;
+      bool status = await _checkInternet();
 
-      final hasInternet = await _hasRealInternet();
-      if (!mounted || !hasInternet) return;
-
-      _needRecover = false; // กัน reload ซ้ำ
-      _controller?.loadRequest(Uri.parse(widget.url));
+      // ถ้าสถานะเน็ตเปลี่ยน (จากไม่มี -> มี หรือ จากมี -> ไม่มี)
+      if (status != _hasInternet) {
+        setState(() => _hasInternet = status);
+        
+        if (status) {
+          // 🎉 เน็ตมาแล้ว! สั่งโหลดเว็บเลย
+          print("🌐 Internet is BACK! Loading WebView...");
+          _controller?.loadRequest(Uri.parse(widget.url));
+        } else {
+          // 💀 เน็ตหลุด!
+          print("❌ Internet LOST!");
+          // (Optional) อาจจะสั่ง clearCache หรือทำอะไรก็ได้
+        }
+      } 
+      // กรณีพิเศษ: เน็ตมี (status=true) แต่หน้าเว็บยังหมุนไม่เสร็จ (อาจจะค้าง) -> สั่งโหลดซ้ำ
+      else if (status && !_isPageLoaded) {
+         print("🌐 Internet OK but Page not loaded... Retrying...");
+         _controller?.loadRequest(Uri.parse(widget.url));
+      }
+    });
+    
+    // รันครั้งแรกทันทีไม่ต้องรอ 5 วิ
+    _checkInternet().then((status) {
+       if (mounted && status) {
+          setState(() => _hasInternet = true);
+          _controller?.loadRequest(Uri.parse(widget.url));
+       }
     });
   }
 
-  Future<bool> _hasRealInternet() async {
+  // ยิง DNS Lookup เพื่อเช็คว่าออกเน็ตได้จริงไหม
+  Future<bool> _checkInternet() async {
     try {
       final result = await InternetAddress.lookup('google.com');
       return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
@@ -303,27 +343,48 @@ class _WebviewHostState extends State<_WebviewHost> {
   void didUpdateWidget(covariant _WebviewHost oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
-      _needRecover = false;
-      _controller?.loadRequest(Uri.parse(widget.url));
+      setState(() => _isPageLoaded = false);
+      if (_hasInternet) {
+        _controller?.loadRequest(Uri.parse(widget.url));
+      }
     }
   }
 
   @override
-  void dispose() {
-    _netSubscription?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final c = _controller;
-    if (c == null) return const ColoredBox(color: Colors.black);
-    return WebViewWidget(controller: c);
+    // ถ้ายัง Init ไม่เสร็จ หรือ ไม่มีเน็ต หรือ หน้าเว็บยังโหลดไม่เสร็จ
+    // ให้แสดง Loading Screen บังไว้เลย (User จะไม่เห็นหน้า Error ไดโนเสาร์)
+    bool showLoading = !_isInit || !_hasInternet || !_isPageLoaded;
+
+    return Stack(
+      children: [
+        if (_isInit && _controller != null)
+           WebViewWidget(controller: _controller!),
+
+        if (showLoading)
+          Container(
+            color: Colors.black, // พื้นหลังดำสนิท
+            width: double.infinity,
+            height: double.infinity,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: const [
+                CircularProgressIndicator(color: Colors.white),
+                SizedBox(height: 20),
+                Text(
+                  "Waiting for connection...",
+                  style: TextStyle(color: Colors.white70, fontSize: 16),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
   }
 }
 
 // ==========================================
-// 🎥 Video Player (Android TV Safe Mode + onReady)
+// 🎥 Video Player (Android TV Safe Mode + Watchdog)
 // ==========================================
 class _DisposableVideoPlayer extends StatefulWidget {
   final File? file;
@@ -355,17 +416,26 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
   StreamSubscription? _completedSub;
   StreamSubscription? _videoParamsSub;
 
+  // 🔥 WATCHDOG VARIABLES 🔥
+  Timer? _freezeWatchdog;
+  Duration _lastPosition = Duration.zero;
+  int _freezeCount = 0;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _init();
+
+    // ✅ เริ่มระบบยามเฝ้าจอ
+    _startWatchdog();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
 
+    _freezeWatchdog?.cancel();
     _stuckWatchdog?.cancel();
     _completedSub?.cancel();
     _videoParamsSub?.cancel();
@@ -387,7 +457,55 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     }
   }
 
+  void _startWatchdog() {
+    _freezeWatchdog?.cancel();
+    _freezeWatchdog = Timer.periodic(const Duration(seconds: 4), (timer) {
+      if (!mounted || _player == null) return;
+
+      final state = _player!.state;
+      
+      // เงื่อนไขหลัก: ต้องกำลังเล่น และ ไม่ได้หมุนติ้ว
+      if (state.playing && !state.buffering) {
+        
+        // -----------------------------------------------------
+        // 1. เช็คค้าง (Time Freeze) - อันเดิม
+        // -----------------------------------------------------
+        final currentPos = state.position;
+        bool isTimeFrozen = (currentPos - _lastPosition).abs().inMilliseconds < 100;
+
+        // -----------------------------------------------------
+        // 2. เช็คจอดำแบบอ้อมๆ (Dimensions Error) - อันใหม่ 🔥
+        // -----------------------------------------------------
+        // ถ้าเล่นอยู่ แต่ความกว้าง/สูงของวิดีโอเป็น 0 หรือ null แปลว่า Decoder พัง (ภาพไม่มาแน่ๆ)
+        bool isDimensionInvalid = (state.width == null || state.width == 0 || 
+                                   state.height == null || state.height == 0);
+
+        // รวมมิตรความผิดปกติ
+        if (isTimeFrozen || isDimensionInvalid) {
+          _freezeCount++;
+          
+          if (isDimensionInvalid) {
+             print("⚠️ Warning: Video dimensions are 0x0 (Black Screen potential)");
+          }
+        } else {
+          _freezeCount = 0; // ปกติสุข
+          _lastPosition = currentPos;
+        }
+
+        // 🔥 ถ้าผิดปกติครบ 3 รอบ (15 วินาที) -> สั่งรีเซ็ต
+        if (_freezeCount >= 2) {
+          String cause = isDimensionInvalid ? "black-screen-0x0" : "freeze-detected";
+          print("🚨 PROBLEM DETECTED ($cause)! Restarting Player...");
+          
+          _freezeCount = 0;
+          _recreatePlayer(reason: cause);
+        }
+      }
+    });
+  }
+
   Future<void> _recreatePlayer({required String reason}) async {
+    _freezeWatchdog?.cancel(); // หยุดยามชั่วคราว
     _stuckWatchdog?.cancel();
     _completedSub?.cancel();
     _videoParamsSub?.cancel();
@@ -400,14 +518,18 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
 
     await Future.delayed(const Duration(milliseconds: 120));
     if (!mounted) return;
+    
     await _init();
+    
+    // เริ่มยามใหม่
+    _startWatchdog();
   }
 
   Future<void> _init() async {
     final p = Player(
       configuration: const PlayerConfiguration(
-        bufferSize: 4 * 1024 * 1024,
-        // bufferSize: 32 * 1024 * 1024, // กล่องจีนอาจใช้เท่านี้ได้
+        // ✅ ลด Buffer ลงเหลือ 16MB (ปลอดภัยสำหรับ mediacodec-copy บน Rockchip)
+        bufferSize: 16 * 1024 * 1024, 
         logLevel: MPVLogLevel.warn,
       ),
     );
@@ -416,11 +538,15 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     final native = p.platform as dynamic;
     if (native != null) {
       try {
-        await native.setProperty('hwdec', 'no'); // สำคัญมาก (กันจอดำ)
-        // await native.setProperty('hwdec', 'mediacodec'); // สำหรับกล่องจีน
-        await native.setProperty('hwdec-codecs', 'all');
+        // 🔥 Config สูตร Rockchip RK3576 + Android 14 (Long Run Stability)
+        
+        // 1. ใช้ Copy เพื่อแก้จอดำและป้องกัน VPU ค้าง
+        await native.setProperty('hwdec', 'no'); 
+        
+        // ✅ ปรับจูน Software Decode ให้เบาเครื่องที่สุด
         await native.setProperty('profile', 'fast');
         await native.setProperty('video-sync', 'audio');
+        await native.setProperty('vd-lavc-threads', '4');
       } catch (_) {}
     }
 
@@ -442,7 +568,7 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
       if (params.w != null && params.h != null && !_ready) {
         _ready = true;
         if (mounted) setState(() {});
-        widget.onReady?.call(); // ✅ แจ้ง parent ให้สลับตอนพร้อม
+        widget.onReady?.call();
       }
     });
 
@@ -465,13 +591,12 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     final c = _controller;
     if (c == null) return const SizedBox();
 
-return Video(
-  controller: c,
-  fit: BoxFit.cover,
-  controls: NoVideoControls,
-  fill: Colors.black,
-);
-
+    return Video(
+      controller: c,
+      fit: BoxFit.cover,
+      controls: NoVideoControls,
+      fill: Colors.black,
+    );
   }
 }
 
