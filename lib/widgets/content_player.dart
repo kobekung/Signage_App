@@ -11,6 +11,24 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/layout_model.dart';
 import '../services/preload_service.dart';
 
+// ==========================================
+// 🔧 การตั้งค่าหลัก - แก้ตรงนี้
+// ==========================================
+class VideoConfig {
+  // 🎚️ เปิด/ปิด Watchdog
+  static const bool ENABLE_WATCHDOG = true; // 👈 false = ปิด, true = เปิด
+  
+  // 🎬 ตั้งค่า Hardware Decode
+  // ทดสอบตามลำดับ: 'mediacodec-copy' → 'no' → 'mediacodec'
+  static const String HWDEC_MODE = 'mediacodec-copy'; // 👈 เปลี่ยนตรงนี้
+  
+  // 📦 Buffer Size (แนะนำ: 64MB หรือ 128MB)
+  static const int BUFFER_SIZE_MB = 128; // 👈 16, 32, 64, 128
+  
+  // 🔍 แสดง Debug Logs
+  static const bool SHOW_DEBUG_LOGS = true; // 👈 true = เปิด, false = ปิด
+}
+
 class ContentPlayer extends StatefulWidget {
   final SignageWidget widget;
   final VoidCallback? onFinished;
@@ -32,24 +50,27 @@ class ContentPlayer extends StatefulWidget {
 class _ContentPlayerState extends State<ContentPlayer> {
   int _currentIndex = 0;
   List<dynamic> _playlist = [];
-
-  // ✅ แสดงจริงตัวไหน
   Widget? _currentContent;
-
-  // ✅ กัน non-video timer ซ้อน
   Timer? _nonVideoTimer;
-
-  // ✅ cache webview เพื่อไม่ให้ reload เมื่อกลับมาหน้าเดิม
   _WebviewHost? _cachedWebHost;
   String? _cachedWebUrl;
-
-  // ✅ token กัน async เก่ามา setState ทับ
   int _playToken = 0;
 
   @override
   void initState() {
     super.initState();
     _initPlaylist();
+    
+    if (VideoConfig.SHOW_DEBUG_LOGS) {
+      print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      print("📺 VIDEO PLAYER CONFIG");
+      print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      print("🔧 Watchdog: ${VideoConfig.ENABLE_WATCHDOG ? 'ENABLED ✅' : 'DISABLED ❌'}");
+      print("🎬 HW Decode: ${VideoConfig.HWDEC_MODE}");
+      print("📦 Buffer: ${VideoConfig.BUFFER_SIZE_MB}MB");
+      print("🔍 Debug Logs: ${VideoConfig.SHOW_DEBUG_LOGS ? 'ON' : 'OFF'}");
+      print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    }
   }
 
   @override
@@ -84,8 +105,6 @@ class _ContentPlayerState extends State<ContentPlayer> {
     if (!mounted) return;
 
     final int token = ++_playToken;
-
-    // ✅ กัน Timer เก่าทับซ้อน
     _nonVideoTimer?.cancel();
     _nonVideoTimer = null;
 
@@ -99,9 +118,8 @@ class _ContentPlayerState extends State<ContentPlayer> {
     }
 
     final item = _playlist[_currentIndex];
-
-    // fullscreen callback
     final isFull = item['fullscreen'] == true;
+    
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.onFullscreenChange != null && mounted) {
         widget.onFullscreenChange!(isFull);
@@ -111,9 +129,6 @@ class _ContentPlayerState extends State<ContentPlayer> {
     final type = item['type'] ?? widget.widget.type;
     int duration = int.tryParse((item['duration'] ?? 10).toString()) ?? 10;
 
-    // ===========================
-    // 🎥 VIDEO
-    // ===========================
     if (type == 'video') {
       final url = item['url'];
       if (url == null || (url is String && url.trim().isEmpty)) {
@@ -127,21 +142,17 @@ class _ContentPlayerState extends State<ContentPlayer> {
       } catch (_) {}
 
       final videoWidget = _DisposableVideoPlayer(
-        key: UniqueKey(), // reset decoder
+        key: UniqueKey(),
         file: cachedFile,
         url: url.toString(),
         isLooping: (!widget.isTriggerMode && _playlist.length == 1),
         onFinished: _nextItem,
       );
 
-      // ✅ ใส่ widget ทันที (สำคัญมาก)
       setState(() => _currentContent = videoWidget);
       return;
     }
 
-    // ===========================
-    // 🖼️ IMAGE / WEBVIEW / TICKER / TEXT
-    // ===========================
     Widget nextWidget;
 
     if (type == 'image') {
@@ -161,8 +172,6 @@ class _ContentPlayerState extends State<ContentPlayer> {
     } else if (type == 'webview') {
       final url = (item['url'] ?? 'https://google.com').toString();
 
-      // ✅ สำคัญ: ห้าม drop เป็น SizedBox() ก่อน
-      // ✅ ใช้ cache เพื่อไม่ destroy webview (ไม่ reload เมื่อกลับมา)
       if (_cachedWebHost == null || _cachedWebUrl != url) {
         _cachedWebUrl = url;
         _cachedWebHost = _WebviewHost(url: url);
@@ -198,15 +207,12 @@ class _ContentPlayerState extends State<ContentPlayer> {
   void _nextItem() {
     _nonVideoTimer?.cancel();
     _nonVideoTimer = null;
-
     _currentIndex++;
     _playCurrentItem();
   }
 
   @override
   Widget build(BuildContext context) {
-    // ✅ ถ้าอยาก “ให้ WebView หยุด render ตอนซ่อน” ให้ใช้ Stack + Offstage
-    // ปัจจุบันแบบง่าย: สลับ child ปกติ (WebView จะยังอยู่ถ้า cache ไว้)
     return Container(
       width: double.infinity,
       height: double.infinity,
@@ -217,7 +223,7 @@ class _ContentPlayerState extends State<ContentPlayer> {
 }
 
 // ==========================================
-// 🌐 WebView Host (Smart Health Check)
+// 🌐 WebView Host
 // ==========================================
 class _WebviewHost extends StatefulWidget {
   final String url;
@@ -230,19 +236,15 @@ class _WebviewHost extends StatefulWidget {
 class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver {
   WebViewController? _controller;
   Timer? _healthCheckTimer;
-  
-  // สถานะการทำงาน
-  bool _hasInternet = false;    // เน็ตมายัง?
-  bool _isPageLoaded = false;   // โหลดหน้าเว็บเสร็จยัง?
-  bool _isInit = false;         // WebView สร้างเสร็จยัง?
+  bool _hasInternet = false;
+  bool _isPageLoaded = false;
+  bool _isInit = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initWebView();
-    
-    // ✅ เริ่มระบบเช็คชีพจรเน็ตทันที
     _startHealthCheck();
   }
 
@@ -256,7 +258,6 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // แอปตื่นมา รีเซ็ตค่าแล้วเช็คใหม่ทันที
       setState(() {
          _hasInternet = false;
          _isPageLoaded = false;
@@ -268,27 +269,25 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
   void _initWebView() {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF000000)) // พื้นหลังดำ
+      ..setBackgroundColor(const Color(0xFF000000))
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (_) {
-            // โหลดเสร็จจริง -> ปลดตัวโหลดออก
             if (mounted) setState(() => _isPageLoaded = true);
           },
           onWebResourceError: (error) {
-            // ถ้า WebView แจ้งว่าพัง ให้ถือว่าเน็ตหลุด
-            print("WebView Error: ${error.description}");
+            if (VideoConfig.SHOW_DEBUG_LOGS) {
+              print("WebView Error: ${error.description}");
+            }
             if (mounted && _isPageLoaded) {
                setState(() => _isPageLoaded = false);
             }
           },
         ),
       );
-      // ยังไม่สั่ง loadRequest ตรงนี้! รอให้เช็คเน็ตผ่านก่อน
       setState(() => _isInit = true);
   }
 
-  // 🔄 เช็คเน็ตทุกๆ 5 วินาที (Ping Google)
   void _startHealthCheck() {
     _healthCheckTimer?.cancel();
     _healthCheckTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
@@ -299,28 +298,28 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
 
       bool status = await _checkInternet();
 
-      // ถ้าสถานะเน็ตเปลี่ยน (จากไม่มี -> มี หรือ จากมี -> ไม่มี)
       if (status != _hasInternet) {
         setState(() => _hasInternet = status);
         
         if (status) {
-          // 🎉 เน็ตมาแล้ว! สั่งโหลดเว็บเลย
-          print("🌐 Internet is BACK! Loading WebView...");
+          if (VideoConfig.SHOW_DEBUG_LOGS) {
+            print("🌐 Internet BACK! Loading WebView...");
+          }
           _controller?.loadRequest(Uri.parse(widget.url));
         } else {
-          // 💀 เน็ตหลุด!
-          print("❌ Internet LOST!");
-          // (Optional) อาจจะสั่ง clearCache หรือทำอะไรก็ได้
+          if (VideoConfig.SHOW_DEBUG_LOGS) {
+            print("❌ Internet LOST!");
+          }
         }
       } 
-      // กรณีพิเศษ: เน็ตมี (status=true) แต่หน้าเว็บยังหมุนไม่เสร็จ (อาจจะค้าง) -> สั่งโหลดซ้ำ
       else if (status && !_isPageLoaded) {
-         print("🌐 Internet OK but Page not loaded... Retrying...");
+         if (VideoConfig.SHOW_DEBUG_LOGS) {
+           print("🌐 Retrying WebView...");
+         }
          _controller?.loadRequest(Uri.parse(widget.url));
       }
     });
     
-    // รันครั้งแรกทันทีไม่ต้องรอ 5 วิ
     _checkInternet().then((status) {
        if (mounted && status) {
           setState(() => _hasInternet = true);
@@ -329,7 +328,6 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
     });
   }
 
-  // ยิง DNS Lookup เพื่อเช็คว่าออกเน็ตได้จริงไหม
   Future<bool> _checkInternet() async {
     try {
       final result = await InternetAddress.lookup('google.com');
@@ -352,8 +350,6 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
 
   @override
   Widget build(BuildContext context) {
-    // ถ้ายัง Init ไม่เสร็จ หรือ ไม่มีเน็ต หรือ หน้าเว็บยังโหลดไม่เสร็จ
-    // ให้แสดง Loading Screen บังไว้เลย (User จะไม่เห็นหน้า Error ไดโนเสาร์)
     bool showLoading = !_isInit || !_hasInternet || !_isPageLoaded;
 
     return Stack(
@@ -363,7 +359,7 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
 
         if (showLoading)
           Container(
-            color: Colors.black, // พื้นหลังดำสนิท
+            color: Colors.black,
             width: double.infinity,
             height: double.infinity,
             child: Column(
@@ -384,7 +380,7 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
 }
 
 // ==========================================
-// 🎥 Video Player (Android TV Safe Mode + Watchdog)
+// 🎥 Video Player (Fixed Version)
 // ==========================================
 class _DisposableVideoPlayer extends StatefulWidget {
   final File? file;
@@ -413,13 +409,13 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
   bool _ready = false;
 
   Timer? _stuckWatchdog;
+  Timer? _freezeWatchdog;
   StreamSubscription? _completedSub;
   StreamSubscription? _videoParamsSub;
 
-  // 🔥 WATCHDOG VARIABLES 🔥
-  Timer? _freezeWatchdog;
   Duration _lastPosition = Duration.zero;
   int _freezeCount = 0;
+  int _bufferingCount = 0; // 🆕 เพิ่ม
 
   @override
   void initState() {
@@ -427,85 +423,117 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     WidgetsBinding.instance.addObserver(this);
     _init();
 
-    // ✅ เริ่มระบบยามเฝ้าจอ
-    _startWatchdog();
+    if (VideoConfig.ENABLE_WATCHDOG) {
+      _startWatchdog();
+      if (VideoConfig.SHOW_DEBUG_LOGS) {
+        print("🔥 Watchdog: ENABLED");
+      }
+    } else {
+      if (VideoConfig.SHOW_DEBUG_LOGS) {
+        print("⚠️ Watchdog: DISABLED");
+      }
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-
     _freezeWatchdog?.cancel();
     _stuckWatchdog?.cancel();
     _completedSub?.cancel();
     _videoParamsSub?.cancel();
-
     _player?.dispose();
     _player = null;
     _controller = null;
-
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 🔧 แก้ไข: ไม่ Recreate ทันทีตอน Resume
     if (state == AppLifecycleState.resumed) {
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (!mounted) return;
-        _recreatePlayer(reason: "resume");
-      });
+      if (VideoConfig.SHOW_DEBUG_LOGS) {
+        print("📱 App resumed - resuming playback");
+      }
+      // แค่เล่นต่อ ไม่ต้อง Recreate
+      _player?.play();
     }
   }
 
   void _startWatchdog() {
     _freezeWatchdog?.cancel();
-    _freezeWatchdog = Timer.periodic(const Duration(seconds: 4), (timer) {
+    
+    _freezeWatchdog = Timer.periodic(const Duration(seconds: 2), (timer) {
       if (!mounted || _player == null) return;
 
       final state = _player!.state;
       
-      // เงื่อนไขหลัก: ต้องกำลังเล่น และ ไม่ได้หมุนติ้ว
-      if (state.playing && !state.buffering) {
+      if (state.playing) {
         
-        // -----------------------------------------------------
-        // 1. เช็คค้าง (Time Freeze) - อันเดิม
-        // -----------------------------------------------------
+        // 🆕 เช็ค Buffering นานเกินไป
+        if (state.buffering) {
+          _bufferingCount++;
+          if (_bufferingCount > 5) { // 10 วินาที
+            if (VideoConfig.SHOW_DEBUG_LOGS) {
+              print("⚠️ Buffering too long (${_bufferingCount * 2}s)");
+            }
+            _bufferingCount = 0;
+            _recreatePlayer(reason: "stuck-buffering");
+            return;
+          }
+        } else {
+          _bufferingCount = 0;
+        }
+        
+        // เช็ค Time Freeze
         final currentPos = state.position;
-        bool isTimeFrozen = (currentPos - _lastPosition).abs().inMilliseconds < 100;
+        bool isTimeFrozen = !state.buffering && 
+                            (currentPos - _lastPosition).abs().inMilliseconds < 100;
 
-        // -----------------------------------------------------
-        // 2. เช็คจอดำแบบอ้อมๆ (Dimensions Error) - อันใหม่ 🔥
-        // -----------------------------------------------------
-        // ถ้าเล่นอยู่ แต่ความกว้าง/สูงของวิดีโอเป็น 0 หรือ null แปลว่า Decoder พัง (ภาพไม่มาแน่ๆ)
+        // เช็ค Dimension Invalid
         bool isDimensionInvalid = (state.width == null || state.width == 0 || 
                                    state.height == null || state.height == 0);
 
-        // รวมมิตรความผิดปกติ
         if (isTimeFrozen || isDimensionInvalid) {
           _freezeCount++;
           
-          if (isDimensionInvalid) {
-             print("⚠️ Warning: Video dimensions are 0x0 (Black Screen potential)");
+          if (VideoConfig.SHOW_DEBUG_LOGS) {
+            if (isDimensionInvalid) {
+               print("⚠️ Warning [${_freezeCount}x]: Dimensions 0x0");
+            } else {
+               print("⚠️ Warning [${_freezeCount}x]: Time frozen at ${currentPos.inSeconds}s");
+            }
           }
         } else {
-          _freezeCount = 0; // ปกติสุข
+          if (_freezeCount > 0 && VideoConfig.SHOW_DEBUG_LOGS) {
+            print("✅ Video recovered!");
+          }
+          _freezeCount = 0;
           _lastPosition = currentPos;
         }
 
-        // 🔥 ถ้าผิดปกติครบ 3 รอบ (15 วินาที) -> สั่งรีเซ็ต
-        if (_freezeCount >= 2) {
-          String cause = isDimensionInvalid ? "black-screen-0x0" : "freeze-detected";
-          print("🚨 PROBLEM DETECTED ($cause)! Restarting Player...");
+        if (_freezeCount >= 1) {
+          String cause = isDimensionInvalid ? "black-screen" : "time-freeze";
+          if (VideoConfig.SHOW_DEBUG_LOGS) {
+            print("🚨 CRITICAL: $cause! Restarting...");
+          }
           
           _freezeCount = 0;
           _recreatePlayer(reason: cause);
         }
+      } else {
+        _freezeCount = 0;
+        _bufferingCount = 0;
       }
     });
   }
 
   Future<void> _recreatePlayer({required String reason}) async {
-    _freezeWatchdog?.cancel(); // หยุดยามชั่วคราว
+    if (VideoConfig.SHOW_DEBUG_LOGS) {
+      print("🔄 Recreating player... Reason: $reason");
+    }
+    
+    _freezeWatchdog?.cancel();
     _stuckWatchdog?.cancel();
     _completedSub?.cancel();
     _videoParamsSub?.cancel();
@@ -521,15 +549,18 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     
     await _init();
     
-    // เริ่มยามใหม่
-    _startWatchdog();
+    if (VideoConfig.ENABLE_WATCHDOG) {
+      _startWatchdog();
+    }
   }
 
   Future<void> _init() async {
+    // 🔧 แก้ไข 1: เพิ่ม Buffer Size
+    final bufferBytes = VideoConfig.BUFFER_SIZE_MB * 1024 * 1024;
+    
     final p = Player(
-      configuration: const PlayerConfiguration(
-        // ✅ ลด Buffer ลงเหลือ 16MB (ปลอดภัยสำหรับ mediacodec-copy บน Rockchip)
-        bufferSize: 16 * 1024 * 1024, 
+      configuration: PlayerConfiguration(
+        bufferSize: bufferBytes, // 🔥 ใช้ค่าจาก Config
         logLevel: MPVLogLevel.warn,
       ),
     );
@@ -538,23 +569,58 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     final native = p.platform as dynamic;
     if (native != null) {
       try {
-        // 🔥 Config สูตร Rockchip RK3576 + Android 14 (Long Run Stability)
+        // 🔧 แก้ไข 2: hwdec พร้อม Fallback
+        try {
+          await native.setProperty('hwdec', VideoConfig.HWDEC_MODE);
+        } catch (e) {
+          if (VideoConfig.SHOW_DEBUG_LOGS) {
+            print("⚠️ hwdec failed, fallback to software");
+          }
+          await native.setProperty('hwdec', 'no');
+        }
         
-        // 1. ใช้ Copy เพื่อแก้จอดำและป้องกัน VPU ค้าง
-        await native.setProperty('hwdec', 'no'); 
+        // 🔧 แก้ไข 3: ปรับ Thread ตาม hwdec
+        if (VideoConfig.HWDEC_MODE == 'no') {
+          await native.setProperty('vd-lavc-threads', '8'); // Software ใช้เต็ม
+          // เพิ่มการ Skip Frame สำหรับ Software
+          await native.setProperty('vd-lavc-skiploopfilter', 'all');
+          await native.setProperty('vd-lavc-skipframe', 'nonref');
+          await native.setProperty('vd-lavc-fast', 'yes');
+        } else {
+          await native.setProperty('vd-lavc-threads', '2'); // Hardware ใช้น้อย
+        }
         
-        // ✅ ปรับจูน Software Decode ให้เบาเครื่องที่สุด
         await native.setProperty('profile', 'fast');
-        await native.setProperty('video-sync', 'audio');
-        await native.setProperty('vd-lavc-threads', '4');
-      } catch (_) {}
+        
+        // 🔧 แก้ไข 4: เปลี่ยน video-sync
+        await native.setProperty('video-sync', 'display-resample');
+        
+        // 🔧 แก้ไข 5: เพิ่ม Cache Settings
+        await native.setProperty('cache', 'yes');
+        await native.setProperty('cache-secs', '10');
+        await native.setProperty('demuxer-max-bytes', '${VideoConfig.BUFFER_SIZE_MB}M');
+        await native.setProperty('demuxer-readahead-secs', '5');
+        
+        if (VideoConfig.SHOW_DEBUG_LOGS) {
+          print("🎬 Player initialized:");
+          print("   - hwdec: ${VideoConfig.HWDEC_MODE}");
+          print("   - buffer: ${VideoConfig.BUFFER_SIZE_MB}MB");
+          print("   - threads: ${VideoConfig.HWDEC_MODE == 'no' ? '8' : '2'}");
+          print("   - cache: 10s + ${VideoConfig.BUFFER_SIZE_MB}MB");
+        }
+      } catch (e) {
+        if (VideoConfig.SHOW_DEBUG_LOGS) {
+          print("❌ Init properties failed: $e");
+        }
+      }
     }
 
+    // 🔧 แก้ไข 6: ทดสอบปิด androidAttachSurfaceAfterVideoParameters
     _controller = VideoController(
       p,
       configuration: const VideoControllerConfiguration(
         enableHardwareAcceleration: true,
-        androidAttachSurfaceAfterVideoParameters: true,
+        androidAttachSurfaceAfterVideoParameters: false, // 🔥 เปลี่ยนเป็น false
       ),
     );
 
@@ -567,16 +633,23 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     _videoParamsSub = p.stream.videoParams.listen((params) {
       if (params.w != null && params.h != null && !_ready) {
         _ready = true;
+        if (VideoConfig.SHOW_DEBUG_LOGS) {
+          print("✅ Video ready: ${params.w}x${params.h}");
+        }
         if (mounted) setState(() {});
         widget.onReady?.call();
       }
     });
 
+    // 🔧 แก้ไข 7: เพิ่ม Init Timeout
     _stuckWatchdog?.cancel();
-    _stuckWatchdog = Timer(const Duration(seconds: 6), () {
+    _stuckWatchdog = Timer(const Duration(seconds: 10), () { // 6 → 10 วิ
       if (!mounted) return;
       if (!_ready) {
-        _recreatePlayer(reason: "stuck-watchdog");
+        if (VideoConfig.SHOW_DEBUG_LOGS) {
+          print("⏱️ Init timeout (10s)");
+        }
+        _recreatePlayer(reason: "init-timeout");
       }
     });
 
@@ -601,7 +674,7 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
 }
 
 // ==========================================
-// 📰 Ticker (เดิม)
+// 📰 Ticker
 // ==========================================
 class _TickerItem extends StatefulWidget {
   final String text;
