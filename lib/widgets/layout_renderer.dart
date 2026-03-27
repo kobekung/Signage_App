@@ -10,13 +10,15 @@ class LayoutRenderer extends StatelessWidget {
 
   final String? fullscreenWidgetId;
   final Function(String id, bool isFull) onWidgetFullscreen;
+  final VoidCallback? onCycleComplete;
 
   const LayoutRenderer({
-    super.key, 
+    super.key,
     required this.layout,
     required this.locationOverrides,
     this.fullscreenWidgetId,
     required this.onWidgetFullscreen,
+    this.onCycleComplete,
   });
 
   @override
@@ -121,9 +123,10 @@ class LayoutRenderer extends StatelessWidget {
     
     else {
       return ContentPlayer(
-        key: ValueKey("normal-${w.id}"), 
+        key: ValueKey("normal-${w.id}"),
         widget: w,
         onFullscreenChange: (isFull) => onWidgetFullscreen(w.id, isFull),
+        onCycleComplete: onCycleComplete,
       );
     }
   }

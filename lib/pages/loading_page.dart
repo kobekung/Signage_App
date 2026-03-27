@@ -139,10 +139,14 @@ class _LoadingPageState extends State<LoadingPage> {
         await api.updateBusStatus(busId, serverVersion);
       } else {
         setState(() => _status = "Starting Player...");
-        layout = await api.fetchLayoutById(serverLayoutId.toString());
-        
-        // [NEW] บันทึก Layout JSON เผื่อไว้เสมอ (กรณี Cache เก่ายังไม่มี JSON)
-        await prefs.setString('cached_layout_json', jsonEncode(layout.toJson()));
+        // ใช้ cached JSON ถ้า version ตรงกัน (ไม่ต้องดึงจาก server ซ้ำ)
+        final String? cachedJson = prefs.getString('cached_layout_json');
+        if (cachedJson != null && cachedJson.isNotEmpty) {
+          layout = SignageLayout.fromJson(jsonDecode(cachedJson));
+        } else {
+          layout = await api.fetchLayoutById(serverLayoutId.toString());
+          await prefs.setString('cached_layout_json', jsonEncode(layout.toJson()));
+        }
       }
 
       if(!mounted) return;

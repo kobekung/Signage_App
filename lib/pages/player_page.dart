@@ -14,6 +14,7 @@ import '../utils/device_util.dart';
 import '../utils/version_update.dart'; // [Added] Import VersionUpdater
 import '../widgets/layout_renderer.dart';
 import '../widgets/content_player.dart';
+import 'loading_page.dart';
 import 'setup_page.dart';
 
 class PlayerPage extends StatefulWidget {
@@ -40,7 +41,8 @@ class _PlayerPageState extends State<PlayerPage> {
 
   // Location Override State
   Timer? _locationPollTimer;
-  String? _currentLocationId; 
+  String? _currentLocationId;
+  bool _isCheckingLocation = false;
   
   // เก็บ List เพื่อรองรับการเล่นวนหลายไฟล์ใน Location เดียวกัน
   Map<String, List<dynamic>> _activeLocationOverrides = {}; 
@@ -49,7 +51,10 @@ class _PlayerPageState extends State<PlayerPage> {
   // Auto Update State
   Timer? _updateCheckTimer;
   bool _isDownloadingUpdate = false;
-  Timer? _apkUpdateTimer;
+
+  // Periodic Restart (clear RAM)
+  bool _pendingRestart = false;
+  Timer? _restartCheckTimer;
 
   // Normal Playlist Fullscreen State
   String? _playlistFullscreenId;
@@ -62,38 +67,34 @@ class _PlayerPageState extends State<PlayerPage> {
     print("🚀 Player Start: Bus ${widget.busId}, Com ${widget.companyId}");
     
     // 0. เปิด Kiosk Mode (ล็อคปุ่ม Home)
-    // _setKioskMode(true);
+    _setKioskMode(true);
 
     // 1. Check Location (30s)
     _locationPollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkBusLocation());
+    _checkBusLocation(); 
 
     // 2. Check Update (5m)
     _updateCheckTimer = Timer.periodic(const Duration(minutes: 5), (_) => _checkForLayoutUpdate());
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-        // เช็ค Location ทันที 1 รอบ (ไม่ต้องรอ 30 วิ)
-        _checkBusLocation(); 
-        
-        // รอ 5 วินาที ให้วิดีโอเล่นนิ่งๆ ก่อน ค่อยเช็คอัปเดตแอป (กันแย่งเน็ต)
-        Future.delayed(const Duration(seconds: 5), () {
-             if (mounted) {
-                 VersionUpdater.checkAndMaybeUpdate(
-                    context, 
-                    silent: true,      // ไม่ต้องโชว์ Loading
-                    isAutoUpdate: true // ถ้ามีใหม่ ให้โหลดเงียบๆ เลย
-                 );
-             }
-        });
+    // 3. ตั้ง flag restart ทุก 10 นาที (จะ restart จริงเมื่อ playlist ครบรอบ)
+    // hard deadline +2 นาที กรณี single-video loop ที่ไม่มี cycle end
+    _restartCheckTimer = Timer.periodic(const Duration(minutes: 10), (_) {
+      if (!mounted) return;
+      _pendingRestart = true;
+      Timer(const Duration(minutes: 2), () {
+        if (mounted && _pendingRestart) _onPlaylistCycleComplete();
+      });
     });
   }
 
   @override
   void dispose() {
     // ปลดล็อค Kiosk Mode เมื่อออกจากหน้านี้ (เผื่อกรณีออกด้วยวิธีอื่น)
-    // _setKioskMode(false);
-    _apkUpdateTimer?.cancel(); 
+    _setKioskMode(false);
+
     _locationPollTimer?.cancel();
     _updateCheckTimer?.cancel();
+    _restartCheckTimer?.cancel();
     super.dispose();
   }
 
@@ -114,11 +115,12 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-
   // ============================
   // 1. Location Logic (Looping Support)
   // ============================
   Future<void> _checkBusLocation() async {
+    if (_isCheckingLocation) return;
+    _isCheckingLocation = true;
     try {
       final response = await http.get(Uri.parse(_busApiUrl));
       if (response.statusCode == 200) {
@@ -136,6 +138,8 @@ class _PlayerPageState extends State<PlayerPage> {
       }
     } catch (e) {
       print("⚠️ Location Poll Error: $e");
+    } finally {
+      _isCheckingLocation = false;
     }
   }
 
@@ -201,22 +205,24 @@ class _PlayerPageState extends State<PlayerPage> {
 
       final api = ApiService(url);
       final busConfig = await api.fetchBusConfig(deviceId);
-      
-      final serverLayoutId = busConfig['id'];
+
+      // ใช้ layout_id ก่อน ถ้าไม่มีค่อยใช้ id (ตรงกับ LoadingPage)
+      final serverLayoutId = busConfig['layout_id'] ?? busConfig['id'];
       final int serverVersion = busConfig['layout_version'] ?? 0;
-      
+
       final bool isDifferentLayout = serverLayoutId.toString() != widget.layout.id;
       final bool isNewerVersion = serverVersion > widget.layout.version;
 
       if (serverLayoutId != null && (isDifferentLayout || isNewerVersion)) {
         print("📢 Update Found: V.$serverVersion");
         setState(() => _isDownloadingUpdate = true);
-        
+
         final newLayout = await api.fetchLayoutById(serverLayoutId.toString());
         await PreloadService.manageAssets(newLayout, (_,__,___){});
-        
+
         await prefs.setString('cached_layout_id', serverLayoutId.toString());
         await prefs.setInt('cached_layout_version', serverVersion);
+        await prefs.setString('cached_layout_json', jsonEncode(newLayout.toJson())); // sync cache
         await api.updateBusStatus(widget.busId, serverVersion);
 
         if (mounted) {
@@ -234,7 +240,24 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   // ============================
-  // 3. Fullscreen & UI Logic
+  // 3. Restart on Cycle Complete
+  // ============================
+  void _onPlaylistCycleComplete() {
+    if (!_pendingRestart || !mounted) return;
+    if (_isDownloadingUpdate) return; // รอ update โหลดเสร็จก่อน
+    _pendingRestart = false;
+    _restartCheckTimer?.cancel();
+    Navigator.pushReplacement(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => const LoadingPage(),
+        transitionDuration: Duration.zero,
+      ),
+    );
+  }
+
+  // ============================
+  // 4. Fullscreen & UI Logic
   // ============================
   void _handleWidgetFullscreen(String widgetId, bool isFull) {
     if (isFull && _playlistFullscreenId != widgetId) {
@@ -243,26 +266,6 @@ class _PlayerPageState extends State<PlayerPage> {
       setState(() => _playlistFullscreenId = null);
     }
   }
-    Future<void> _clearOwnerAndExit() async {
-  try {
-    const platform = MethodChannel('com.example.signage_app/kiosk');
-    
-    // 1. สั่งปลด Kiosk ก่อน (กันเหนียว)
-    await platform.invokeMethod('stopKioskMode');
-    
-    // 2. สั่งล้าง Device Owner
-    await platform.invokeMethod('clearDeviceOwner');
-    
-    print("✅ Device Owner Cleared! You can now uninstall the app.");
-  } catch (e) {
-    print("❌ Error clearing owner: $e");
-  }
-
-  // 3. ปิดแอป
-  if (mounted) {
-    SystemNavigator.pop();
-  }
-}
 
   // [Modified] เปลี่ยนชื่อฟังก์ชันจาก _showExitPinDialog เป็น _handleAdminMenu
   Future<void> _handleAdminMenu() async {
@@ -275,7 +278,7 @@ class _PlayerPageState extends State<PlayerPage> {
 
     if (action == 'exit') {
        // ถ้าเลือก Exit -> ปิด Kiosk และออกแอพ
-      //  await _setKioskMode(false);
+       await _setKioskMode(false);
        if (mounted) SystemNavigator.pop();
     } else if (action == 'update') {
        // ถ้าเลือก Update -> เรียก VersionUpdater
@@ -307,9 +310,10 @@ class _PlayerPageState extends State<PlayerPage> {
               // Main Renderer
               LayoutRenderer(
                 layout: widget.layout,
-                locationOverrides: _activeLocationOverrides, // ส่ง List ของ Location items
+                locationOverrides: _activeLocationOverrides,
                 fullscreenWidgetId: _playlistFullscreenId,
                 onWidgetFullscreen: _handleWidgetFullscreen,
+                onCycleComplete: _onPlaylistCycleComplete,
               ),
 
               // Location Fullscreen Overlay
@@ -363,8 +367,8 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
   Timer? _timer;
-  int _countdown = 10;
-  bool _isUnlocked = false;
+  int _countdown = 10; 
+  bool _isUnlocked = false; // [Added] สถานะปลดล็อค (ถ้าใส่รหัสถูกจะเปลี่ยนหน้า)
 
   @override
   void initState() {
@@ -373,18 +377,21 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
       _focusNode.requestFocus();
     });
 
+    // เริ่มนับถอยหลัง 10 วิ (เฉพาะตอนยังไม่ปลดล็อค)
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
           if (_isUnlocked) {
-            timer.cancel();
-            return;
+             timer.cancel(); // ถ้าปลดล็อคแล้ว ไม่ต้องนับ
+             return;
           }
+
           if (_countdown > 0) {
             _countdown--;
           } else {
+            // หมดเวลา -> ปิด Dialog
             timer.cancel();
-            Navigator.of(context).pop();
+            Navigator.of(context).pop(); 
           }
         });
       }
@@ -400,34 +407,12 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
   }
 
   void _onPinChanged(String value) {
-    if (value == '000000') {
-      _timer?.cancel();
+    if (value == '000000') { 
+      _timer?.cancel(); // หยุดนับเวลาทันที
       setState(() {
-        _isUnlocked = true;
+        _isUnlocked = true; // [Key Logic] เปลี่ยนสถานะเป็น Unlock
       });
-    }
-  }
-
-  // ✅ 1. ต้องวางฟังก์ชันนี้ไว้ตรงนี้ (ใน class State ก่อน build)
-  Future<void> _clearOwnerAndExit() async {
-    try {
-      // ⚠️ เช็คชื่อ package ให้ตรงกับโปรเจกต์ (com.example.signage_app หรือ com.example.driver_system)
-      const platform = MethodChannel('com.example.signage_app/kiosk');
-      
-      // 1. สั่งปลด Kiosk ก่อน
-      await platform.invokeMethod('stopKioskMode');
-      
-      // 2. สั่งล้าง Device Owner (ถอนสิทธิ์ Admin)
-      await platform.invokeMethod('clearDeviceOwner');
-      
-      print("✅ Device Owner Cleared!");
-    } catch (e) {
-      print("❌ Error clearing owner: $e");
-    }
-
-    // 3. ปิดแอป
-    if (mounted) {
-      SystemNavigator.pop();
+      // ไม่ต้องสั่ง pop หรือ SystemNavigator.pop() ที่นี่ รอ user กดปุ่มเลือกเอง
     }
   }
 
@@ -452,46 +437,85 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
           children: [
             // ปุ่ม Check Update
             ElevatedButton.icon(
-              onPressed: () => Navigator.pop(context, 'update'),
-              icon: const Icon(Icons.system_update),
-              label: const Text('Check for App Update'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 15),
-              ),
-            ),
-            const SizedBox(height: 10),
-            
-            // ปุ่ม Exit App (ปกติ)
-            ElevatedButton.icon(
-              onPressed: () => Navigator.pop(context, 'exit'),
-              icon: const Icon(Icons.exit_to_app),
-              label: const Text('Exit Application'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.grey,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 15),
-              ),
-            ),
-             const SizedBox(height: 10),
+  onPressed: () => Navigator.pop(context, 'update'),
+  icon: const Icon(Icons.system_update),
+  label: const Text('Check for App Update'),
+  style: ButtonStyle(
+    padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 15)),
+    foregroundColor: WidgetStateProperty.all(Colors.white),
 
-             // ✅ 2. ปุ่มล้าง Admin (เรียกฟังก์ชันที่สร้างไว้ข้อ 1)
-             ElevatedButton.icon(
-              onPressed: _clearOwnerAndExit, // ไม่แดงแล้ว
-              icon: const Icon(Icons.delete_forever),
-              label: const Text('CLEAR ADMIN & EXIT'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red, // สีแดงเตือน
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 15),
-              ),
-            ),
+    // --- 1. จัดการสีพื้นหลัง ---
+    backgroundColor: WidgetStateProperty.resolveWith<Color>((states) {
+      // เพิ่ม WidgetState.focused เข้าไปในเงื่อนไข
+      if (states.contains(WidgetState.hovered) || 
+          states.contains(WidgetState.pressed) || 
+          states.contains(WidgetState.focused)) { // <--- สำคัญสำหรับรีโมททีวี
+        return Colors.green; 
+      }
+      return Colors.blue; // สีปกติ
+    }),
+
+    // --- 2. จัดการสีเงา (Overlay) ---
+    overlayColor: WidgetStateProperty.resolveWith<Color?>((states) {
+      if (states.contains(WidgetState.hovered) || states.contains(WidgetState.focused)) {
+        return Colors.green.shade600; 
+      }
+      return null;
+    }),
+
+    // --- 3. จัดการเงา (Elevation) ---
+    elevation: WidgetStateProperty.resolveWith<double>((states) {
+      if (states.contains(WidgetState.hovered) || states.contains(WidgetState.focused)) {
+        return 10.0; // ลอยขึ้นเมื่อโฟกัส
+      }
+      return 2.0;
+    }),
+
+    // --- 4. (แนะนำเพิ่ม) เส้นขอบขาวเมื่อโฟกัส เพื่อให้เห็นชัดบนทีวี ---
+    side: WidgetStateProperty.resolveWith<BorderSide>((states) {
+      if (states.contains(WidgetState.focused)) {
+        return const BorderSide(color: Colors.white, width: 3); // ขอบขาวหนาๆ
+      }
+      return BorderSide.none;
+    }),
+  ),
+),
+            const SizedBox(height: 15),
+            // ปุ่ม Exit App
+            ElevatedButton.icon(
+  onPressed: () => Navigator.pop(context, 'exit'),
+  icon: const Icon(Icons.exit_to_app),
+  label: const Text('Exit Application'),
+  style: ButtonStyle(
+    padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 15)),
+    foregroundColor: WidgetStateProperty.all(Colors.white),
+    
+    // จัดการสีพื้นหลัง:
+    backgroundColor: WidgetStateProperty.resolveWith<Color>((states) {
+      // เพิ่ม WidgetState.focused เข้าไปสำหรับรีโมททีวี
+      if (states.contains(WidgetState.hovered) || 
+          states.contains(WidgetState.pressed) ||
+          states.contains(WidgetState.focused)) { // <--- เพิ่มตรงนี้ครับ
+        return Colors.green; 
+      }
+      // สถานะปกติ -> เป็นสีแดง
+      return Colors.red; 
+    }),
+    
+    // (Optional) เพิ่มเส้นขอบตอน Focus ให้ชัดขึ้นไปอีก (Android TV นิยมทำ)
+    side: WidgetStateProperty.resolveWith<BorderSide>((states) {
+      if (states.contains(WidgetState.focused)) {
+        return const BorderSide(color: Colors.white, width: 3);
+      }
+      return BorderSide.none;
+    }),
+  ),
+),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(context).pop(), 
             child: const Text("Close"),
           ),
         ],
@@ -502,7 +526,6 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
     // [View 1] หน้าใส่ PIN (ค่าเริ่มต้น)
     // ----------------------------------------
     return AlertDialog(
-      // ... (ส่วนใส่ PIN เหมือนเดิม) ...
       backgroundColor: Colors.white,
       title: Row(
         children: [
@@ -520,9 +543,9 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
             controller: _controller,
             focusNode: _focusNode,
             autofocus: true,
-            obscureText: true,
+            obscureText: true, 
             keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly], 
             onChanged: _onPinChanged,
             style: const TextStyle(color: Colors.black, fontSize: 24, letterSpacing: 5),
             textAlign: TextAlign.center,
@@ -537,7 +560,7 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: () => Navigator.of(context).pop(), 
           child: const Text("Cancel"),
         ),
       ],

@@ -1,5 +1,4 @@
 // lib/widgets/content_player.dart
-// 🎯 Version: FIXED - Loop-Aware Restart
 import 'dart:async';
 import 'dart:io';
 
@@ -12,40 +11,10 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/layout_model.dart';
 import '../services/preload_service.dart';
 
-// ==========================================
-// 🔧 การตั้งค่าหลัก (FIXED)
-// ==========================================
-class VideoConfig {
-  // 🎚️ Watchdog (ตรวจจับจอค้าง)
-  static const bool ENABLE_WATCHDOG = true;
-  
-  // 🎬 Hardware Decode (ทดสอบ 'no' ก่อน!)
-  static const String HWDEC_MODE = 'no'; // 👈 Software decode เสถียรกว่า
-  
-  // 📦 Buffer (เพิ่มขึ้น)
-  static const int BUFFER_SIZE_MB = 96; // 👈 เพิ่มเป็น 96MB (จาก 64)
-  
-  // 🔄 Preventive Restart (FIXED - รอจบ loop)
-  static const bool ENABLE_PREVENTIVE_RESTART = true;
-  static const int RESTART_CHECK_MINUTES = 30; // 👈 เปลี่ยนเป็น 30 นาที (จาก 15)
-  static const bool RESTART_ONLY_AT_LOOP_END = true; // 🆕 รอให้จบ loop ก่อน!
-  static const int RESTART_TIMEOUT_MINUTES = 5; // 🆕 ถ้ารอเกิน 5 นาที ก็รีไปเลย
-  
-  // 🧹 Cache Flush (ปิดสำหรับ looping)
-  static const bool ENABLE_CACHE_FLUSH = false; // 👈 ปิดเพื่อลด disruption
-  
-  // 🌡️ Temperature Monitor
-  static const bool ENABLE_TEMP_MONITOR = true;
-  static const int TEMP_CHECK_SECONDS = 30;
-  static const int MAX_TEMP_CELSIUS = 75;
-  
-  // 🔍 Debug
-  static const bool SHOW_DEBUG_LOGS = true;
-}
-
 class ContentPlayer extends StatefulWidget {
   final SignageWidget widget;
   final VoidCallback? onFinished;
+  final VoidCallback? onCycleComplete;
   final bool isTriggerMode;
   final Function(bool isFullscreen)? onFullscreenChange;
 
@@ -53,6 +22,7 @@ class ContentPlayer extends StatefulWidget {
     super.key,
     required this.widget,
     this.onFinished,
+    this.onCycleComplete,
     this.isTriggerMode = false,
     this.onFullscreenChange,
   });
@@ -64,29 +34,24 @@ class ContentPlayer extends StatefulWidget {
 class _ContentPlayerState extends State<ContentPlayer> {
   int _currentIndex = 0;
   List<dynamic> _playlist = [];
+
+  // ✅ แสดงจริงตัวไหน
   Widget? _currentContent;
+
+  // ✅ กัน non-video timer ซ้อน
   Timer? _nonVideoTimer;
+
+  // ✅ cache webview เพื่อไม่ให้ reload เมื่อกลับมาหน้าเดิม
   _WebviewHost? _cachedWebHost;
   String? _cachedWebUrl;
+
+  // ✅ token กัน async เก่ามา setState ทับ
   int _playToken = 0;
 
   @override
   void initState() {
     super.initState();
     _initPlaylist();
-    
-    if (VideoConfig.SHOW_DEBUG_LOGS) {
-      print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-      print("📺 LOOP-AWARE RESTART MODE");
-      print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-      print("🎬 HW Decode: ${VideoConfig.HWDEC_MODE}");
-      print("📦 Buffer: ${VideoConfig.BUFFER_SIZE_MB}MB");
-      print("🔄 Restart Check: ${VideoConfig.RESTART_CHECK_MINUTES}min");
-      print("⏸️ Wait for Loop End: ${VideoConfig.RESTART_ONLY_AT_LOOP_END ? 'YES ✅' : 'NO'}");
-      print("🧹 Cache Flush: ${VideoConfig.ENABLE_CACHE_FLUSH ? 'YES' : 'NO (disabled for looping)'}");
-      print("🌡️ Temp Monitor: ${VideoConfig.ENABLE_TEMP_MONITOR ? 'YES' : 'NO'}");
-      print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    }
   }
 
   @override
@@ -121,6 +86,8 @@ class _ContentPlayerState extends State<ContentPlayer> {
     if (!mounted) return;
 
     final int token = ++_playToken;
+
+    // ✅ กัน Timer เก่าทับซ้อน
     _nonVideoTimer?.cancel();
     _nonVideoTimer = null;
 
@@ -130,12 +97,14 @@ class _ContentPlayerState extends State<ContentPlayer> {
         return;
       } else {
         _currentIndex = 0;
+        widget.onCycleComplete?.call();
       }
     }
 
     final item = _playlist[_currentIndex];
+
+    // fullscreen callback
     final isFull = item['fullscreen'] == true;
-    
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.onFullscreenChange != null && mounted) {
         widget.onFullscreenChange!(isFull);
@@ -145,6 +114,9 @@ class _ContentPlayerState extends State<ContentPlayer> {
     final type = item['type'] ?? widget.widget.type;
     int duration = int.tryParse((item['duration'] ?? 10).toString()) ?? 10;
 
+    // ===========================
+    // 🎥 VIDEO
+    // ===========================
     if (type == 'video') {
       final url = item['url'];
       if (url == null || (url is String && url.trim().isEmpty)) {
@@ -156,6 +128,8 @@ class _ContentPlayerState extends State<ContentPlayer> {
       try {
         cachedFile = await PreloadService.getCachedFile(url);
       } catch (_) {}
+
+      if (!mounted || token != _playToken) return;
 
       final videoWidget = _DisposableVideoPlayer(
         key: UniqueKey(),
@@ -169,6 +143,10 @@ class _ContentPlayerState extends State<ContentPlayer> {
       return;
     }
 
+
+    // ===========================
+    // 🖼️ IMAGE / WEBVIEW / TICKER / TEXT
+    // ===========================
     Widget nextWidget;
 
     if (type == 'image') {
@@ -187,10 +165,14 @@ class _ContentPlayerState extends State<ContentPlayer> {
       }
     } else if (type == 'webview') {
       final url = (item['url'] ?? 'https://google.com').toString();
+
+      // ✅ สำคัญ: ห้าม drop เป็น SizedBox() ก่อน
+      // ✅ ใช้ cache เพื่อไม่ destroy webview (ไม่ reload เมื่อกลับมา)
       if (_cachedWebHost == null || _cachedWebUrl != url) {
         _cachedWebUrl = url;
         _cachedWebHost = _WebviewHost(url: url);
       }
+
       nextWidget = _cachedWebHost!;
       duration = 15;
     } else if (type == 'ticker') {
@@ -221,19 +203,9 @@ class _ContentPlayerState extends State<ContentPlayer> {
   void _nextItem() {
     _nonVideoTimer?.cancel();
     _nonVideoTimer = null;
-    
-    // 🔥 รอให้ Dispose เสร็จก่อนเล่นใหม่
-    if (_currentContent is _DisposableVideoPlayer) {
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) {
-          _currentIndex++;
-          _playCurrentItem();
-        }
-      });
-    } else {
-      _currentIndex++;
-      _playCurrentItem();
-    }
+
+    _currentIndex++;
+    _playCurrentItem();
   }
 
   @override
@@ -242,13 +214,18 @@ class _ContentPlayerState extends State<ContentPlayer> {
       width: double.infinity,
       height: double.infinity,
       color: Colors.black,
-      child: _currentContent ?? const SizedBox(),
+      child: _currentContent ?? const Center(
+        child: SizedBox(
+          width: 20, height: 20,
+          child: CircularProgressIndicator(color: Colors.white30, strokeWidth: 2),
+        ),
+      ),
     );
   }
 }
 
 // ==========================================
-// 🌐 WebView Host (ไม่เปลี่ยน)
+// 🌐 WebView Host (Keep Alive + Recover Only When Network Error)
 // ==========================================
 class _WebviewHost extends StatefulWidget {
   final String url;
@@ -258,88 +235,80 @@ class _WebviewHost extends StatefulWidget {
   State<_WebviewHost> createState() => _WebviewHostState();
 }
 
-class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver {
+class _WebviewHostState extends State<_WebviewHost> {
   WebViewController? _controller;
-  Timer? _healthCheckTimer;
-  bool _hasInternet = false;
-  bool _isPageLoaded = false;
-  bool _isInit = false;
+  StreamSubscription? _netSubscription;
+  Timer? _retryTimer;
+
+  // ✅ reload เฉพาะตอน “เคยพังเพราะเน็ต”
+  bool _needRecover = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _initWebView();
-    _startHealthCheck();
+    _listenToNetwork();
+    _startRetryTimer();
   }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _healthCheckTimer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      setState(() {
-         _hasInternet = false;
-         _isPageLoaded = false;
-      });
-      _startHealthCheck();
-    }
+  void _startRetryTimer() {
+    _retryTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      if (!_needRecover || !mounted) return;
+      final hasInternet = await _hasRealInternet();
+      if (!mounted || !hasInternet) return;
+      setState(() => _needRecover = false);
+      _controller?.loadRequest(Uri.parse(widget.url));
+    });
   }
 
   void _initWebView() {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF000000))
+      ..setBackgroundColor(const Color(0x00000000))
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (_) {
-            if (mounted) setState(() => _isPageLoaded = true);
+            if (_needRecover && mounted) setState(() => _needRecover = false);
           },
           onWebResourceError: (error) {
-            if (mounted && _isPageLoaded) {
-               setState(() => _isPageLoaded = false);
+            final desc = error.description.toLowerCase();
+
+            final isNetworkError =
+                desc.contains("net::err_internet_disconnected") ||
+                desc.contains("net::err_name_not_resolved") ||
+                desc.contains("net::err_address_unreachable") ||
+                desc.contains("net::err_connection_timed_out") ||
+                desc.contains("net::err_connection_closed");
+
+            if (isNetworkError && !_needRecover && mounted) {
+              setState(() => _needRecover = true);
             }
           },
         ),
-      );
-      setState(() => _isInit = true);
+      )
+      ..loadRequest(Uri.parse(widget.url));
+
+    setState(() {});
   }
 
-  void _startHealthCheck() {
-    _healthCheckTimer?.cancel();
-    _healthCheckTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
+  void _listenToNetwork() {
+    _netSubscription =
+        Connectivity().onConnectivityChanged.listen((results) async {
+      final hasConnection = results.any((r) => r != ConnectivityResult.none);
+      if (!hasConnection) return;
 
-      bool status = await _checkInternet();
+      // ✅ ถ้าไม่เคยพังเพราะเน็ต ห้าม reload
+      if (!_needRecover) return;
 
-      if (status != _hasInternet) {
-        setState(() => _hasInternet = status);
-        if (status) {
-          _controller?.loadRequest(Uri.parse(widget.url));
-        }
-      } 
-      else if (status && !_isPageLoaded) {
-         _controller?.loadRequest(Uri.parse(widget.url));
-      }
-    });
-    
-    _checkInternet().then((status) {
-       if (mounted && status) {
-          setState(() => _hasInternet = true);
-          _controller?.loadRequest(Uri.parse(widget.url));
-       }
+      final hasInternet = await _hasRealInternet();
+      if (!mounted || !hasInternet) return;
+
+      if (mounted) setState(() => _needRecover = false);
+      _controller?.loadRequest(Uri.parse(widget.url));
     });
   }
 
-  Future<bool> _checkInternet() async {
+  Future<bool> _hasRealInternet() async {
     try {
       final result = await InternetAddress.lookup('google.com');
       return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
@@ -352,37 +321,40 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
   void didUpdateWidget(covariant _WebviewHost oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
-      setState(() => _isPageLoaded = false);
-      if (_hasInternet) {
-        _controller?.loadRequest(Uri.parse(widget.url));
-      }
+      _needRecover = false;
+      _controller?.loadRequest(Uri.parse(widget.url));
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    bool showLoading = !_isInit || !_hasInternet || !_isPageLoaded;
+  void dispose() {
+    _netSubscription?.cancel();
+    _retryTimer?.cancel();
+    super.dispose();
+  }
 
+  @override
+  Widget build(BuildContext context) {
+    final c = _controller;
+    if (c == null) return const ColoredBox(color: Colors.black);
     return Stack(
       children: [
-        if (_isInit && _controller != null)
-           WebViewWidget(controller: _controller!),
-
-        if (showLoading)
+        WebViewWidget(controller: c),
+        if (_needRecover)
           Container(
             color: Colors.black,
-            width: double.infinity,
-            height: double.infinity,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: const [
-                CircularProgressIndicator(color: Colors.white),
-                SizedBox(height: 20),
-                Text(
-                  "Waiting for connection...",
-                  style: TextStyle(color: Colors.white70, fontSize: 16),
-                ),
-              ],
+            child: const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(color: Colors.white),
+                  SizedBox(height: 16),
+                  Text(
+                    'Waiting for connection...',
+                    style: TextStyle(color: Colors.white70, fontSize: 16),
+                  ),
+                ],
+              ),
             ),
           ),
       ],
@@ -391,22 +363,19 @@ class _WebviewHostState extends State<_WebviewHost> with WidgetsBindingObserver 
 }
 
 // ==========================================
-// 🎥 Video Player (FIXED - Loop-Aware Restart)
+// 🎥 Video Player (Android TV Safe Mode + onReady)
 // ==========================================
 class _DisposableVideoPlayer extends StatefulWidget {
   final File? file;
   final String url;
   final bool isLooping;
   final VoidCallback onFinished;
-  final VoidCallback? onReady;
-
   const _DisposableVideoPlayer({
     super.key,
     required this.file,
     required this.url,
     required this.isLooping,
     required this.onFinished,
-    this.onReady,
   });
 
   @override
@@ -419,283 +388,55 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
   VideoController? _controller;
   bool _ready = false;
 
-  // Timers
-  Timer? _initCheckTimer;
-  Timer? _freezeWatchdog;
-  Timer? _preventiveRestartTimer; // 🆕
-  Timer? _cacheFlushTimer; 
-  Timer? _tempMonitorTimer;
-  
+  Timer? _stuckWatchdog;
+  Timer? _positionWatchdog;
   StreamSubscription? _completedSub;
   StreamSubscription? _videoParamsSub;
+  StreamSubscription? _errorSub;
 
-  // Counters
-  int _initCheckCount = 0;
-  Duration _lastPosition = Duration.zero;
-  int _freezeCount = 0;
-  int _bufferingCount = 0;
-  DateTime _playerStartTime = DateTime.now();
-
-  // 🆕 Loop-Aware Restart State
-  bool _shouldRestartSoon = false;
-  DateTime? _nextRestartAfter;
+  Duration? _lastWatchdogPos;
+  int _positionStuckCount = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _playerStartTime = DateTime.now();
     _init();
-
-    if (VideoConfig.ENABLE_WATCHDOG) {
-      _startWatchdog();
-    }
-    
-    // 🔥 เริ่ม Loop-Aware Preventive Restart
-    if (VideoConfig.ENABLE_PREVENTIVE_RESTART) {
-      _startPreventiveRestart();
-    }
-    
-    // Cache Flush (ถ้าเปิด)
-    if (VideoConfig.ENABLE_CACHE_FLUSH) {
-      _startCacheFlush();
-    }
-    
-    // Temperature Monitor
-    if (VideoConfig.ENABLE_TEMP_MONITOR) {
-      _startTempMonitor();
-    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _initCheckTimer?.cancel();
-    _freezeWatchdog?.cancel();
-    _preventiveRestartTimer?.cancel();
-    _cacheFlushTimer?.cancel();
-    _tempMonitorTimer?.cancel();
+
+    _stuckWatchdog?.cancel();
+    _positionWatchdog?.cancel();
     _completedSub?.cancel();
     _videoParamsSub?.cancel();
+    _errorSub?.cancel();
+
     _player?.dispose();
     _player = null;
     _controller = null;
+
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _player?.play();
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (!mounted || _ready) return; // ✅ กำลังเล่นอยู่ปกติ ไม่ recreate
+        _recreatePlayer(reason: "resume");
+      });
     }
-  }
-
-  // 🔄 FIXED: Loop-Aware Preventive Restart
-  void _startPreventiveRestart() {
-    final checkInterval = Duration(minutes: VideoConfig.RESTART_CHECK_MINUTES);
-
-    _preventiveRestartTimer = Timer.periodic(checkInterval, (timer) {
-      if (!mounted) return;
-
-      final elapsed = DateTime.now().difference(_playerStartTime);
-      
-      // 🔥 เช็คว่าถึงเวลารีหรือยัง
-      if (elapsed.inMinutes >= VideoConfig.RESTART_CHECK_MINUTES) {
-        
-        if (VideoConfig.RESTART_ONLY_AT_LOOP_END && widget.isLooping) {
-          // ✅ รอให้จบ loop ก่อน
-          _shouldRestartSoon = true;
-          _nextRestartAfter = DateTime.now().add(
-            Duration(minutes: VideoConfig.RESTART_TIMEOUT_MINUTES)
-          );
-          
-          if (VideoConfig.SHOW_DEBUG_LOGS) {
-            print("⏸️ Restart scheduled at next loop end (${elapsed.inMinutes}min)");
-          }
-        } else {
-          // Non-looping หรือปิด flag → รีเลย
-          if (VideoConfig.SHOW_DEBUG_LOGS) {
-            print("🔄 Immediate restart (${elapsed.inMinutes}min, looping=false)");
-          }
-          _recreatePlayer(reason: "preventive-${elapsed.inMinutes}min");
-        }
-      }
-      
-      // ⚠️ Safety: ถ้ารอนานเกิน timeout ก็รีไปเลย
-      if (_shouldRestartSoon && _nextRestartAfter != null) {
-        if (DateTime.now().isAfter(_nextRestartAfter!)) {
-          if (VideoConfig.SHOW_DEBUG_LOGS) {
-            print("⚠️ Force restart (timeout ${VideoConfig.RESTART_TIMEOUT_MINUTES}min)");
-          }
-          _recreatePlayer(reason: "preventive-timeout");
-          _shouldRestartSoon = false;
-          _nextRestartAfter = null;
-        }
-      }
-    });
-  }
-
-  // 🧹 Cache Flush (เดิม)
-  void _startCacheFlush() {
-    final interval = Duration(minutes: 5);
-    
-    _cacheFlushTimer = Timer.periodic(interval, (timer) async {
-      if (!mounted || _player == null) return;
-      
-      final native = _player!.platform as dynamic;
-      if (native != null) {
-        try {
-          await native.command(['vf', 'lavfi', '[buffer=0]']);
-          if (VideoConfig.SHOW_DEBUG_LOGS) {
-            print("🧹 Cache flushed");
-          }
-        } catch (e) {
-          if (VideoConfig.SHOW_DEBUG_LOGS) {
-            print("⚠️ Cache flush failed: $e");
-          }
-        }
-      }
-    });
-  }
-
-  // 🌡️ Temperature Monitor (เดิม)
-  void _startTempMonitor() {
-    final interval = Duration(seconds: VideoConfig.TEMP_CHECK_SECONDS);
-    
-    _tempMonitorTimer = Timer.periodic(interval, (timer) async {
-      if (!mounted) return;
-      
-      try {
-        final tempFile = File('/sys/class/thermal/thermal_zone0/temp');
-        if (await tempFile.exists()) {
-          final temp = await tempFile.readAsString();
-          final celsius = int.parse(temp.trim()) ~/ 1000;
-          
-          if (celsius >= VideoConfig.MAX_TEMP_CELSIUS) {
-            if (VideoConfig.SHOW_DEBUG_LOGS) {
-              print("🌡️ HIGH TEMP: ${celsius}°C!");
-            }
-            
-            final native = _player?.platform as dynamic;
-            if (native != null) {
-              try {
-                await native.setProperty('vd-lavc-threads', '2');
-              } catch (e) {}
-            }
-          }
-        }
-      } catch (e) {
-        // ไม่สามารถอ่านได้
-      }
-    });
-  }
-
-  void _startWatchdog() {
-    _freezeWatchdog?.cancel();
-    
-    _freezeWatchdog = Timer.periodic(const Duration(seconds: 2), (timer) {
-      if (!mounted || _player == null) return;
-
-      final state = _player!.state;
-      
-      if (state.playing) {
-        
-        if (state.buffering) {
-          _bufferingCount++;
-          if (_bufferingCount > 10) {
-            if (VideoConfig.SHOW_DEBUG_LOGS) {
-              print("⚠️ Buffering stuck (${_bufferingCount * 2}s)");
-            }
-            _bufferingCount = 0;
-            _recreatePlayer(reason: "stuck-buffering");
-            return;
-          }
-        } else {
-          _bufferingCount = 0;
-        }
-        
-        final currentPos = state.position;
-        bool isTimeFrozen = !state.buffering && 
-                            (currentPos - _lastPosition).abs().inMilliseconds < 100;
-
-        bool isDimensionInvalid = (state.width == null || state.width == 0 || 
-                                   state.height == null || state.height == 0);
-
-        if (isTimeFrozen || isDimensionInvalid) {
-          _freezeCount++;
-          
-          if (VideoConfig.SHOW_DEBUG_LOGS) {
-            if (isDimensionInvalid) {
-               print("⚠️ Freeze [${_freezeCount}x]: 0x0");
-            } else {
-               print("⚠️ Freeze [${_freezeCount}x]: ${currentPos.inSeconds}s");
-            }
-          }
-        } else {
-          if (_freezeCount > 0 && VideoConfig.SHOW_DEBUG_LOGS) {
-            print("✅ Recovered!");
-          }
-          _freezeCount = 0;
-          _lastPosition = currentPos;
-        }
-
-        if (_freezeCount >= 2) {
-          String cause = isDimensionInvalid ? "black-screen" : "time-freeze";
-          if (VideoConfig.SHOW_DEBUG_LOGS) {
-            print("🚨 $cause! Restarting...");
-          }
-          
-          _freezeCount = 0;
-          _recreatePlayer(reason: cause);
-        }
-      } else {
-        _freezeCount = 0;
-        _bufferingCount = 0;
-      }
-    });
-  }
-
-  void _startInitCheck() {
-    _initCheckCount = 0;
-    _initCheckTimer?.cancel();
-    
-    _initCheckTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      _initCheckCount++;
-      
-      if (_ready) {
-        if (VideoConfig.SHOW_DEBUG_LOGS) {
-          print("✅ Ready in ${_initCheckCount}s");
-        }
-        timer.cancel();
-        _initCheckCount = 0;
-        return;
-      }
-      
-      if (_initCheckCount >= 15) {
-        if (VideoConfig.SHOW_DEBUG_LOGS) {
-          print("⏱️ Init timeout (15s)");
-        }
-        timer.cancel();
-        _initCheckCount = 0;
-        _recreatePlayer(reason: "init-timeout");
-        return;
-      }
-      
-      if (VideoConfig.SHOW_DEBUG_LOGS && _initCheckCount % 5 == 0) {
-        print("⏳ Loading... (${_initCheckCount}s)");
-      }
-    });
   }
 
   Future<void> _recreatePlayer({required String reason}) async {
-    if (VideoConfig.SHOW_DEBUG_LOGS) {
-      print("🔄 Recreating: $reason");
-    }
-    
-    _initCheckTimer?.cancel();
-    _freezeWatchdog?.cancel();
+    _stuckWatchdog?.cancel();
+    _positionWatchdog?.cancel();
     _completedSub?.cancel();
     _videoParamsSub?.cancel();
+    _errorSub?.cancel();
 
     _player?.dispose();
     _player = null;
@@ -703,28 +444,41 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
 
     if (mounted) setState(() => _ready = false);
 
-    await Future.delayed(const Duration(milliseconds: 200));
+    await Future.delayed(const Duration(milliseconds: 120));
     if (!mounted) return;
-    
-    // 🔥 Reset timers
-    _playerStartTime = DateTime.now();
-    _shouldRestartSoon = false;
-    _nextRestartAfter = null;
-    
     await _init();
-    
-    if (VideoConfig.ENABLE_WATCHDOG) {
-      _startWatchdog();
-    }
+  }
+
+  void _startPositionWatchdog() {
+    _positionWatchdog?.cancel();
+    _lastWatchdogPos = null;
+    _positionStuckCount = 0;
+
+    _positionWatchdog = Timer.periodic(const Duration(seconds: 8), (_) {
+      if (!mounted) return;
+      final p = _player;
+      if (p == null) { _positionWatchdog?.cancel(); return; }
+      if (p.state.completed) { _positionWatchdog?.cancel(); return; }
+
+      final pos = p.state.position;
+      if (pos == _lastWatchdogPos) {
+        _positionStuckCount++;
+        if (_positionStuckCount >= 2) { // ค้าง 16+ วินาที
+          _positionWatchdog?.cancel();
+          _recreatePlayer(reason: "position-stuck");
+        }
+      } else {
+        _positionStuckCount = 0;
+        _lastWatchdogPos = pos;
+      }
+    });
   }
 
   Future<void> _init() async {
-    final bufferBytes = VideoConfig.BUFFER_SIZE_MB * 1024 * 1024;
-    
     final p = Player(
-      configuration: PlayerConfiguration(
-        bufferSize: bufferBytes,
-        logLevel: MPVLogLevel.error,
+      configuration: const PlayerConfiguration(
+        bufferSize: 4 * 1024 * 1024,
+        logLevel: MPVLogLevel.warn,
       ),
     );
     _player = p;
@@ -732,106 +486,57 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     final native = p.platform as dynamic;
     if (native != null) {
       try {
-        // hwdec
-        try {
-          await native.setProperty('hwdec', VideoConfig.HWDEC_MODE);
-        } catch (e) {
-          await native.setProperty('hwdec', 'no');
-        }
-        
-        // Threads
-        if (VideoConfig.HWDEC_MODE == 'no') {
-          await native.setProperty('vd-lavc-threads', '4');
-        } else {
-          await native.setProperty('vd-lavc-threads', '2');
-        }
-        
+        await native.setProperty('hwdec', 'no'); // สำคัญมาก (กันจอดำ)
+        await native.setProperty('hwdec-codecs', 'all');
         await native.setProperty('profile', 'fast');
         await native.setProperty('video-sync', 'audio');
-        
-        // Cache
-        await native.setProperty('cache', 'yes');
-        await native.setProperty('cache-secs', '20');
-        await native.setProperty('demuxer-max-bytes', '${VideoConfig.BUFFER_SIZE_MB * 2}M');
-        await native.setProperty('demuxer-readahead-secs', '10');
-        
-        await native.setProperty('demuxer-lavf-o', 'fflags=+genpts+discardcorrupt+nobuffer');
-        
-        await native.setProperty('vd-queue-max-samples', '2');
-        await native.setProperty('vd-queue-max-bytes', '32M');
-        
-        if (widget.url.startsWith('http')) {
-          await native.setProperty('stream-buffer-size', '64M');
-          await native.setProperty('cache-pause-initial', 'yes');
-          await native.setProperty('cache-pause-wait', '3');
-        }
-        
-        if (VideoConfig.SHOW_DEBUG_LOGS) {
-          print("🎬 Init: hwdec=${VideoConfig.HWDEC_MODE}, buffer=${VideoConfig.BUFFER_SIZE_MB}MB");
-        }
-      } catch (e) {
-        if (VideoConfig.SHOW_DEBUG_LOGS) {
-          print("❌ Init failed: $e");
-        }
-      }
+      } catch (_) {}
     }
 
     _controller = VideoController(
       p,
-      configuration: VideoControllerConfiguration(
-        enableHardwareAcceleration: VideoConfig.HWDEC_MODE != 'no',
-        androidAttachSurfaceAfterVideoParameters: false,
+      configuration: const VideoControllerConfiguration(
+        enableHardwareAcceleration: true,
+        androidAttachSurfaceAfterVideoParameters: true,
       ),
     );
 
-    // 🔥 FIXED: รีตอนจบ loop (ถ้าถึงเวลา)
     _completedSub = p.stream.completed.listen((isCompleted) {
-      if (isCompleted) {
-        // ✅ ถ้ามีธง "ควรรี" + จบ loop แล้ว → รีเลย
-        if (_shouldRestartSoon) {
-          if (VideoConfig.SHOW_DEBUG_LOGS) {
-            print("✅ Restarting at loop end");
-          }
-          _shouldRestartSoon = false;
-          _nextRestartAfter = null;
-          _recreatePlayer(reason: "preventive-at-loop-end");
-          return;
-        }
-        
-        // ถ้าไม่ใช่ looping → เรียก onFinished ตามปกติ
-        if (!widget.isLooping) {
-          widget.onFinished();
-        }
+      if (isCompleted && !widget.isLooping) {
+        widget.onFinished();
       }
     });
 
     _videoParamsSub = p.stream.videoParams.listen((params) {
       if (params.w != null && params.h != null && !_ready) {
+        // เพิ่งพร้อม
         _ready = true;
-        if (VideoConfig.SHOW_DEBUG_LOGS) {
-          print("✅ ${params.w}x${params.h}");
-        }
         if (mounted) setState(() {});
-        widget.onReady?.call();
+        _startPositionWatchdog();
+      } else if (_ready && (params.w == null || params.h == null)) {
+        // surface หลุดหลังจาก ready แล้ว (จอดำแต่ position ยังขยับ)
+        _recreatePlayer(reason: "surface-lost");
       }
     });
 
-    _startInitCheck();
+    _errorSub = p.stream.error.listen((error) {
+      if (mounted && error.isNotEmpty) {
+        _recreatePlayer(reason: "error");
+      }
+    });
+
+    _stuckWatchdog?.cancel();
+    _stuckWatchdog = Timer(const Duration(seconds: 6), () {
+      if (!mounted) return;
+      if (!_ready) {
+        _recreatePlayer(reason: "stuck-watchdog");
+      }
+    });
 
     final media = widget.file != null ? Media(widget.file!.path) : Media(widget.url);
-    try {
-      await p.open(media, play: true);
-      await p.setVolume(100.0);
-      await p.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
-    } catch (e) {
-      if (VideoConfig.SHOW_DEBUG_LOGS) {
-        print("❌ Video open failed: $e");
-      }
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted) {
-        _recreatePlayer(reason: "open-failed");
-      }
-    }
+    await p.open(media, play: true);
+    await p.setVolume(100.0);
+    await p.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
   }
 
   @override
@@ -839,17 +544,18 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     final c = _controller;
     if (c == null) return const SizedBox();
 
-    return Video(
-      controller: c,
-      fit: BoxFit.cover,
-      controls: NoVideoControls,
-      fill: Colors.black,
-    );
+return Video(
+  controller: c,
+  fit: BoxFit.cover,
+  controls: NoVideoControls,
+  fill: Colors.black,
+);
+
   }
 }
 
 // ==========================================
-// 📰 Ticker (ไม่เปลี่ยน)
+// 📰 Ticker (เดิม)
 // ==========================================
 class _TickerItem extends StatefulWidget {
   final String text;

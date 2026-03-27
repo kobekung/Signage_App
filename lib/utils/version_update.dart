@@ -10,7 +10,6 @@ import 'package:overlay_support/overlay_support.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter/services.dart'; //
 
 // [Fixed] Import ไฟล์ที่อยู่ใน folder utils เดียวกัน ใช้ชื่อไฟล์ตรงๆ ได้เลย
 import 'downloadUI.dart'; 
@@ -25,11 +24,9 @@ enum UpdateCheckResult {
 }
 
 class VersionUpdater {
-  static OverlayEntry? _progressOverlay;
   static Future<UpdateCheckResult> checkAndMaybeUpdate(
     BuildContext context, {
     bool silent = false,
-    bool isAutoUpdate = false, // ✅ [New] ถ้า true คืออัปเดตเลยไม่ต้องถาม
     String? specificUrl,
   }) async {
     // 1. เตรียม URL
@@ -98,15 +95,7 @@ class VersionUpdater {
         await _showForceDialog(context, apkUrl, latestVersion, info.version);
         return UpdateCheckResult.forceUpdateRequired;
       } else if (_isLower(info.version, latestVersion)) {
-        // Soft Update (เวอร์ชันใหม่ทั่วไป)
-        if (isAutoUpdate) {
-             // ✅ ถ้าเป็น Auto Update ให้โหลดเลย ไม่ต้องถาม
-             print("🔄 Auto Updating to $latestVersion...");
-             _downloadAndInstall(context, apkUrl, latestVersion);
-        } else {
-             // ถ้ากดเช็คเอง ให้ถามก่อน
-             await _showSoftDialog(context, apkUrl, latestVersion);
-        }
+        await _showSoftDialog(context, apkUrl, latestVersion);
         return UpdateCheckResult.softUpdateAvailable;
       } else {
         if (!silent) _showUpToDateDialog(context, info.version);
@@ -193,7 +182,7 @@ class VersionUpdater {
     return false;
   }
 
-static Future<void> _downloadAndInstall(
+  static Future<void> _downloadAndInstall(
     BuildContext context, String apkUrl, String version
   ) async {
     if (apkUrl.isEmpty) {
@@ -209,38 +198,22 @@ static Future<void> _downloadAndInstall(
       final file = File(savePath);
       if (await file.exists()) await file.delete();
 
-      DownloadUI.start();
+      DownloadUI.start(); // เรียกใช้ไฟล์ DownloadUI.dart
       
       // แสดง Dialog Progress
-      // if (context.mounted) {
-      //     showDialog(
-      //       context: context,
-      //       barrierDismissible: false,
-      //       builder: (_) => DownloadProgressDialog(
-      //         title: 'กำลังอัปเดตระบบ...',
-      //         percent: DownloadUI.percent,
-      //         detail: DownloadUI.detail,
-      //         onCancel: () { },
-      //       ),
-      //     );
-      // }
-      if (context.mounted) {
-        _removeOverlay(); // ลบอันเก่าออกก่อน (กันเหนียว)
-        _progressOverlay = OverlayEntry(
-          builder: (context) => Positioned(
-            bottom: 30, // ห่างจากขอบล่าง 30
-            right: 30,  // ห่างจากขอบขวา 30
-            child: DownloadProgressDialog(
-              title: 'กำลังอัปเดตระบบ...',
-              percent: DownloadUI.percent,
-              detail: DownloadUI.detail,
-              onCancel: () {},
-            ),
-          ),
-        );
-        // สั่งแสดงบนหน้าจอ
-        Overlay.of(context).insert(_progressOverlay!);
-      }
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => DownloadProgressDialog( // เรียกใช้ไฟล์ DownloadProgressDialog.dart
+          title: 'กำลังอัปเดต...',
+          percent: DownloadUI.percent,
+          detail: DownloadUI.detail,
+          onCancel: () {
+            DownloadUI.cancel();
+            Navigator.of(context).maybePop();
+          },
+        ),
+      );
 
       // เริ่มโหลด
       int lastRec = 0;
@@ -272,54 +245,18 @@ static Future<void> _downloadAndInstall(
       DownloadUI.done();
       DownloadUI.installing();
 
-      // 1. ปลด Kiosk ก่อนติดตั้ง
-      try {
-         const platform = MethodChannel('com.example.signage_app/kiosk');
-         await platform.invokeMethod('stopKioskMode');
-      } catch (e) {
-         print("Failed to stop kiosk: $e");
-      }
-      
-      // รอให้ระบบปลดล็อคทัน
-      await Future.delayed(const Duration(milliseconds: 500));
+      // ปิด Dialog
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
 
-      // 2. พยายามติดตั้งแบบเงียบ (Silent Install)
-      try {
-        const platform = MethodChannel('com.example.signage_app/kiosk');
-        await platform.invokeMethod('installApk', {'path': savePath});
-        print("🚀 Sent silent install command");
-        
-        // ✅ ถ้าสำเร็จ ให้ return ออกไปเลย (ไม่ต้องทำบรรทัดล่างต่อ)
-        // ปล่อยให้ Android จัดการฆ่าแอปเอง
-        _removeOverlay();
-        return; 
-      } catch (e) {
-        print("Silent install failed, falling back to normal install: $e");
-        // ถ้าพัง ค่อยไหลลงไปข้างล่าง
-      }
-
-      // 3. (Fallback) ถ้าข้างบนพัง หรือไม่ใช่ Device Owner ให้ใช้วิธีปกติ
-      // ปิด Dialog ก่อน เพราะวิธีนี้จะมี UI ของ Android เด้งมาทับ
-     _removeOverlay(); // ปิดป้ายมุมจอก่อน
-      await InstallPlugin.installApk(savePath); // เรียกตัวติดตั้งของ Android
+      // ติดตั้ง
+      await InstallPlugin.installApk(savePath);
 
     } on DioException catch (e) {
-      _removeOverlay(); // ✅ ปิดป้ายมุมจอ
-      // ❌ ลบ Navigator.pop ออก
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
       if (!CancelToken.isCancel(e)) _toast('ดาวน์โหลดล้มเหลว: ${e.message}');
-      
     } catch (e) {
-      _removeOverlay(); // ✅ ปิดป้ายมุมจอ
-      // ❌ ลบ Navigator.pop ออก
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
       _toast('ติดตั้งล้มเหลว: $e');
-    }
-  }
-  static void _removeOverlay() {
-    try {
-      _progressOverlay?.remove();
-      _progressOverlay = null;
-    } catch (_) {
-      // ดักไว้เผื่อ overlay ถูก remove ไปแล้ว
     }
   }
 
