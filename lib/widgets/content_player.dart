@@ -350,7 +350,7 @@ class _WebviewHostState extends State<_WebviewHost> {
                   CircularProgressIndicator(color: Colors.white),
                   SizedBox(height: 16),
                   Text(
-                    'Waiting for connection...',
+                    'Waiting for Internet connection...',
                     style: TextStyle(color: Colors.white70, fontSize: 16),
                   ),
                 ],
