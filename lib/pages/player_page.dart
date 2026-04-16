@@ -209,6 +209,8 @@ class _PlayerPageState extends State<PlayerPage> {
       // ใช้ layout_id ก่อน ถ้าไม่มีค่อยใช้ id (ตรงกับ LoadingPage)
       final serverLayoutId = busConfig['layout_id'] ?? busConfig['id'];
       final int serverVersion = busConfig['layout_version'] ?? 0;
+      // ✅ ใช้ bus_id จาก server เสมอ (กัน busId = 0 จาก offline mode)
+      final int freshBusId = int.tryParse(busConfig['bus_id']?.toString() ?? '') ?? widget.busId;
 
       final bool isDifferentLayout = serverLayoutId.toString() != widget.layout.id;
       final bool isNewerVersion = serverVersion > widget.layout.version;
@@ -222,12 +224,13 @@ class _PlayerPageState extends State<PlayerPage> {
 
         await prefs.setString('cached_layout_id', serverLayoutId.toString());
         await prefs.setInt('cached_layout_version', serverVersion);
-        await prefs.setString('cached_layout_json', jsonEncode(newLayout.toJson())); // sync cache
-        await api.updateBusStatus(widget.busId, serverVersion);
+        await prefs.setString('cached_layout_json', jsonEncode(newLayout.toJson()));
+        await prefs.setInt('cached_bus_id', freshBusId); // ✅ อัพเดท cache
+        await api.updateBusStatus(freshBusId, serverVersion); // ✅ ใช้ freshBusId
 
         if (mounted) {
           Navigator.pushReplacement(context, PageRouteBuilder(
-            pageBuilder: (_,__,___) => PlayerPage(layout: newLayout, busId: widget.busId, companyId: widget.companyId),
+            pageBuilder: (_,__,___) => PlayerPage(layout: newLayout, busId: freshBusId, companyId: widget.companyId),
             transitionDuration: Duration.zero
           ));
         }
@@ -293,7 +296,7 @@ class _PlayerPageState extends State<PlayerPage> {
     // ใช้ PopScope ดักปุ่ม Back
     return PopScope(
       canPop: false, 
-      onPopInvoked: (didPop) {
+      onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         // เมื่อกด Back (หรือปุ่มรีโมท) ให้เรียก Admin Menu
         _handleAdminMenu();
@@ -335,7 +338,7 @@ class _PlayerPageState extends State<PlayerPage> {
                   top: 20, right: 20,
                   child: SafeArea(
                     child: FloatingActionButton(
-                      backgroundColor: Colors.red.withOpacity(0.8),
+                      backgroundColor: Colors.red.withValues(alpha: 0.8),
                       child: const Icon(Icons.settings, color: Colors.white), // เปลี่ยน Icon เป็น Settings ให้สื่อความหมาย
                       onPressed: () => _handleAdminMenu(), // เรียก Admin Menu
                     ),
@@ -357,7 +360,7 @@ class _PlayerPageState extends State<PlayerPage> {
 // 🔐 Admin Menu Dialog (รวม PIN และ เมนู)
 // ==========================================
 class _AdminMenuDialog extends StatefulWidget {
-  const _AdminMenuDialog({super.key});
+  const _AdminMenuDialog();
 
   @override
   State<_AdminMenuDialog> createState() => _AdminMenuDialogState();

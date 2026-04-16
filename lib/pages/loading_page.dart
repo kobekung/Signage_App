@@ -41,17 +41,20 @@ class _LoadingPageState extends State<LoadingPage> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final String? cachedJson = prefs.getString('cached_layout_json');
-      
+
       if (cachedJson != null && cachedJson.isNotEmpty) {
         setState(() => _status = "Offline Mode: Loading cached layout...");
         print("⚠️ Network Error. Loading cached layout...");
-        
+
         final layout = SignageLayout.fromJson(jsonDecode(cachedJson));
-        
+
+        // ✅ ใช้ busId/companyId ที่ save ไว้ตอน online แทนการใส่ 0
+        final int busId = prefs.getInt('cached_bus_id') ?? 0;
+        final int companyId = prefs.getInt('cached_company_id') ?? 0;
+
         if (!mounted) return false;
-        // กรณี Offline เราอาจจะไม่มี busId/companyId ล่าสุด ให้ใส่ 0 หรือค่า default ไปก่อน
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => PlayerPage(
-            layout: layout, busId: 0, companyId: 0
+            layout: layout, busId: busId, companyId: companyId
         )));
         return true;
       }
@@ -134,8 +137,11 @@ class _LoadingPageState extends State<LoadingPage> {
         // Save Cache
         await prefs.setString('cached_layout_id', serverLayoutId.toString());
         await prefs.setInt('cached_layout_version', serverVersion);
-        await prefs.setString('cached_layout_json', jsonEncode(layout.toJson())); // [NEW] บันทึก Layout JSON
-        
+        await prefs.setString('cached_layout_json', jsonEncode(layout.toJson()));
+        // ✅ save busId/companyId ไว้ใช้ตอน offline
+        await prefs.setInt('cached_bus_id', busId);
+        await prefs.setInt('cached_company_id', companyId);
+
         await api.updateBusStatus(busId, serverVersion);
       } else {
         setState(() => _status = "Starting Player...");
