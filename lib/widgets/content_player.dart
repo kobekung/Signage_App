@@ -454,7 +454,7 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     _lastWatchdogPos = null;
     _positionStuckCount = 0;
 
-    _positionWatchdog = Timer.periodic(const Duration(seconds: 8), (_) {
+    _positionWatchdog = Timer.periodic(const Duration(seconds: 4), (_) {
       if (!mounted) return;
       final p = _player;
       if (p == null) { _positionWatchdog?.cancel(); return; }
