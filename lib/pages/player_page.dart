@@ -50,6 +50,7 @@ class _PlayerPageState extends State<PlayerPage> {
   Timer? _updateCheckTimer;
   bool _isDownloadingUpdate = false;
   Timer? _apkUpdateTimer;
+  bool _isCheckingAppUpdate = false;
 
   // Normal Playlist Fullscreen State
   String? _playlistFullscreenId;
@@ -77,10 +78,10 @@ class _PlayerPageState extends State<PlayerPage> {
         // รอ 5 วินาที ให้วิดีโอเล่นนิ่งๆ ก่อน ค่อยเช็คอัปเดตแอป (กันแย่งเน็ต)
         Future.delayed(const Duration(seconds: 5), () {
              if (mounted) {
-                 VersionUpdater.checkAndMaybeUpdate(
-                    context, 
-                    silent: true,      // ไม่ต้องโชว์ Loading
-                    isAutoUpdate: true // ถ้ามีใหม่ ให้โหลดเงียบๆ เลย
+                 _checkForAppUpdate();
+                 _apkUpdateTimer = Timer.periodic(
+                   const Duration(minutes: 5),
+                   (_) => _checkForAppUpdate(),
                  );
              }
         });
@@ -191,6 +192,21 @@ class _PlayerPageState extends State<PlayerPage> {
   // ============================
   // 2. Auto Update Logic
   // ============================
+  Future<void> _checkForAppUpdate() async {
+    if (_isCheckingAppUpdate || !mounted) return;
+
+    _isCheckingAppUpdate = true;
+    try {
+      await VersionUpdater.checkAndMaybeUpdate(
+        context,
+        silent: true,
+        isAutoUpdate: true,
+      );
+    } finally {
+      _isCheckingAppUpdate = false;
+    }
+  }
+
   Future<void> _checkForLayoutUpdate() async {
     if (_isDownloadingUpdate) return;
     try {
