@@ -102,7 +102,7 @@ class _LoadingPageState extends State<LoadingPage> {
            // ลองเล่น Offline ก่อน ถ้าไม่ได้ค่อย Retry
            bool playedOffline = await _tryPlayOffline();
            if (!playedOffline) {
-             _playOfflineOrRetry("Connection Failed: $e");
+             _playOfflineOrRetry("Connection Failed");
            }
         }
         return;
@@ -161,7 +161,7 @@ class _LoadingPageState extends State<LoadingPage> {
        // [MODIFIED] ลองเล่น Offline ในกรณี Error อื่นๆ
        bool playedOffline = await _tryPlayOffline();
        if (!playedOffline) {
-          _playOfflineOrRetry(e.toString());
+          _playOfflineOrRetry("Connection Failed");
        }
     }
   }
