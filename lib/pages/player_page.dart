@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/layout_model.dart';
 import '../services/api_service.dart';
 import '../services/preload_service.dart';
+import '../services/tts_service.dart';
 import '../utils/device_util.dart';
 import '../utils/version_update.dart'; // [Added] Import VersionUpdater
 import '../widgets/layout_renderer.dart';
@@ -66,7 +67,7 @@ class _PlayerPageState extends State<PlayerPage> {
     // _setKioskMode(true);
 
     // 1. Check Location (30s)
-    _locationPollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkBusLocation());
+    _locationPollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkBusLocation());
 
     // 2. Check Update (5m)
     _updateCheckTimer = Timer.periodic(const Duration(minutes: 5), (_) => _checkForLayoutUpdate());
@@ -92,9 +93,10 @@ class _PlayerPageState extends State<PlayerPage> {
   void dispose() {
     // ปลดล็อค Kiosk Mode เมื่อออกจากหน้านี้ (เผื่อกรณีออกด้วยวิธีอื่น)
     // _setKioskMode(false);
-    _apkUpdateTimer?.cancel(); 
+    _apkUpdateTimer?.cancel();
     _locationPollTimer?.cancel();
     _updateCheckTimer?.cancel();
+    TtsService().stop();
     super.dispose();
   }
 
@@ -125,18 +127,42 @@ class _PlayerPageState extends State<PlayerPage> {
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body);
         if (json['status'] == true && json['data'] != null) {
-          final locationIdRaw = json['data']['busround_location_now_id'];
+          final data = json['data'] as Map<String, dynamic>;
+          final locationIdRaw = data['busround_location_now_id'];
           final locationId = locationIdRaw?.toString();
-          
+
           if (locationId != _currentLocationId) {
             print("📍 Location Changed: $_currentLocationId -> $locationId");
             _currentLocationId = locationId;
             _updateContentForLocation(locationId);
+            _announceTts(data, locationId);
           }
         }
       }
     } catch (e) {
       print("⚠️ Location Poll Error: $e");
+    }
+  }
+
+  void _announceTts(Map<String, dynamic> data, String? locationId) {
+    if (locationId == null) return;
+
+    final routeArray = (data['route_array'] as String?)
+        ?.split(',')
+        .map((e) => e.trim())
+        .toList() ?? [];
+    final terminalId = data['terminal_id']?.toString();
+    final routeNameTh = data['route_name_th']?.toString() ?? '';
+    final locationNow = data['location_now']?.toString() ?? '';
+
+    if (routeArray.isEmpty) return;
+
+    if (locationId == routeArray.first) {
+      TtsService().announceWelcome(routeNameTh, locationNow);
+    } else if (locationId == terminalId) {
+      TtsService().announceGoodbye(routeNameTh);
+    } else {
+      TtsService().announceStation(locationNow);
     }
   }
 

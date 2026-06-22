@@ -11,6 +11,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../models/layout_model.dart';
 import '../services/preload_service.dart';
+import '../services/tts_service.dart';
 
 // ==========================================
 // 🔧 การตั้งค่าหลัก (FIXED)
@@ -428,6 +429,7 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
   
   StreamSubscription? _completedSub;
   StreamSubscription? _videoParamsSub;
+  StreamSubscription? _duckingSub;
 
   // Counters
   int _initCheckCount = 0;
@@ -477,6 +479,7 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     _tempMonitorTimer?.cancel();
     _completedSub?.cancel();
     _videoParamsSub?.cancel();
+    _duckingSub?.cancel();
     _player?.dispose();
     _player = null;
     _controller = null;
@@ -696,6 +699,8 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     _freezeWatchdog?.cancel();
     _completedSub?.cancel();
     _videoParamsSub?.cancel();
+    _duckingSub?.cancel();
+    _duckingSub = null;
 
     _player?.dispose();
     _player = null;
@@ -821,8 +826,13 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     final media = widget.file != null ? Media(widget.file!.path) : Media(widget.url);
     try {
       await p.open(media, play: true);
-      await p.setVolume(100.0);
+      await p.setVolume(TtsService().isSpeaking ? 15.0 : 100.0);
       await p.setPlaylistMode(widget.isLooping ? PlaylistMode.single : PlaylistMode.none);
+
+      _duckingSub?.cancel();
+      _duckingSub = TtsService().duckStream.listen((isDucking) {
+        _player?.setVolume(isDucking ? 15.0 : 100.0);
+      });
     } catch (e) {
       if (VideoConfig.SHOW_DEBUG_LOGS) {
         print("❌ Video open failed: $e");
