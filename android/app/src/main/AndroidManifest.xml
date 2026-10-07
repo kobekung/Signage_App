@@ -80,5 +80,9 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Android 11+ ต้องประกาศไว้ ไม่งั้นแอปมองไม่เห็น TTS engine ของเครื่อง (flutter_tts) -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
     </queries>
 </manifest>
