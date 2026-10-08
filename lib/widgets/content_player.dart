@@ -101,6 +101,10 @@ class _ContentPlayerState extends State<ContentPlayer> {
 
     if (props['playlist'] != null && (props['playlist'] as List).isNotEmpty) {
       _playlist = List.from(props['playlist']);
+      // รายการแบบ 'once' เล่นเฉพาะตอนรถถึง location (trigger) ไม่อยู่ใน loop ปกติ
+      if (!widget.isTriggerMode) {
+        _playlist = _playlist.where((item) => !isOnceItem(item)).toList();
+      }
     } else if (props['url'] != null || props['text'] != null) {
       _playlist = [
         {
@@ -167,6 +171,13 @@ class _ContentPlayerState extends State<ContentPlayer> {
       );
 
       setState(() => _currentContent = videoWidget);
+
+      // Trigger mode: กันวิดีโอโหลดไม่ได้แล้วค้าง (player จะ recreate วนไม่จบ)
+      if (widget.isTriggerMode) {
+        _nonVideoTimer = Timer(Duration(seconds: duration + 60), () {
+          if (mounted && token == _playToken) _nextItem();
+        });
+      }
       return;
     }
 

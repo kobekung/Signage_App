@@ -50,8 +50,13 @@ class _PlayerPageState extends State<PlayerPage> {
   bool _isFirstPoll = true; // เปิดแอปกลางรอบ ไม่ต้องประกาศต้อนรับซ้ำ
 
   // เก็บ List เพื่อรองรับการเล่นวนหลายไฟล์ใน Location เดียวกัน
-  Map<String, List<dynamic>> _activeLocationOverrides = {}; 
-  SignageWidget? _activeFullscreenOverride; 
+  Map<String, List<dynamic>> _activeLocationOverrides = {};
+  SignageWidget? _activeFullscreenOverride;
+
+  // รายการแบบ 'once' ที่กำลังเล่น (เล่นครั้งเดียวจนจบ แม้รถจะออกจาก location แล้ว)
+  Map<String, OnceOverride> _activeOnceOverrides = {};
+  OnceOverride? _activeOnceFullscreen;
+  int _onceSeq = 0; // ทำให้ key ไม่ซ้ำ เพื่อเล่นใหม่ทุกครั้งที่ถึง location
 
   // Auto Update State
   Timer? _updateCheckTimer;
@@ -243,21 +248,58 @@ class _PlayerPageState extends State<PlayerPage> {
   void _updateContentForLocation(String? locationId) {
     Map<String, List<dynamic>> newOverrides = {};
     SignageWidget? newFullscreen;
+    Map<String, OnceOverride> newOnce = {};
+    OnceOverride? newOnceFullscreen;
 
     if (locationId != null) {
       for (final widget in widget.layout.widgets) {
         final props = widget.properties;
         if (props['playlist'] is List) {
           final playlist = props['playlist'] as List;
-          
+
           // ดึงทุกรายการที่ตรงกับ Location นี้มา (เพื่อให้เล่นวนได้หลายไฟล์)
-          final matchItems = playlist.where(
+          final allMatchItems = playlist.where(
             (item) => item['locationId'].toString() == locationId
           ).toList();
 
+          // แบบ 'once' → เล่นครั้งเดียวจบ
+          final onceItems = allMatchItems.where(isOnceItem).toList();
+          if (onceItems.isNotEmpty) {
+            print("🎯 Once Match! Widget: ${widget.id}, Items: ${onceItems.length}");
+            final seq = ++_onceSeq;
+            final onceFull = onceItems.where((i) => i['fullscreen'] == true).toList();
+            final onceNormal = onceItems.where((i) => i['fullscreen'] != true).toList();
+
+            if (onceFull.isNotEmpty && newOnceFullscreen == null) {
+              newOnceFullscreen = OnceOverride(
+                key: "once-full-$locationId-$seq",
+                widget: SignageWidget(
+                  id: "once-full-$locationId",
+                  type: widget.type,
+                  x: 0, y: 0, width: 0, height: 0,
+                  properties: { ...props, 'playlist': onceFull, 'url': null },
+                ),
+              );
+            }
+            if (onceNormal.isNotEmpty) {
+              newOnce[widget.id] = OnceOverride(
+                key: "once-${widget.id}-$locationId-$seq",
+                widget: SignageWidget(
+                  id: "${widget.id}-once-$locationId",
+                  type: widget.type,
+                  x: widget.x, y: widget.y, width: widget.width, height: widget.height,
+                  properties: { ...props, 'playlist': onceNormal, 'url': null },
+                ),
+              );
+            }
+          }
+
+          // แบบ 'loop' (เดิม) → วนเล่นระหว่างอยู่ที่ location
+          final matchItems = allMatchItems.where((i) => !isOnceItem(i)).toList();
+
           if (matchItems.isNotEmpty) {
             print("✨ Location Match! Widget: ${widget.id}, Items: ${matchItems.length}");
-            
+
             // แยกกรณี Fullscreen กับ In-Place
             final fullscreenItems = matchItems.where((i) => i['fullscreen'] == true).toList();
             final normalItems = matchItems.where((i) => i['fullscreen'] != true).toList();
@@ -285,9 +327,24 @@ class _PlayerPageState extends State<PlayerPage> {
       setState(() {
         _activeLocationOverrides = newOverrides;
         _activeFullscreenOverride = newFullscreen;
+        // ตัวที่กำลังเล่นอยู่ให้เล่นต่อจนจบ ยกเว้น location ใหม่มีรายการ 'once' ของ widget เดียวกัน
+        _activeOnceOverrides = {..._activeOnceOverrides, ...newOnce};
+        if (newOnceFullscreen != null) _activeOnceFullscreen = newOnceFullscreen;
       });
     }
   }
+
+  void _handleOnceFinished(String widgetId, String key) {
+    if (!mounted || _activeOnceOverrides[widgetId]?.key != key) return;
+    print("✅ Once finished: $widgetId");
+    setState(() => _activeOnceOverrides = Map.of(_activeOnceOverrides)..remove(widgetId));
+  }
+
+  VoidCallback _onceFullscreenFinisher(String key) => () {
+    if (!mounted || _activeOnceFullscreen?.key != key) return;
+    print("✅ Once fullscreen finished");
+    setState(() => _activeOnceFullscreen = null);
+  };
 
   // ============================
   // 2. Auto Update Logic
@@ -428,6 +485,8 @@ class _PlayerPageState extends State<PlayerPage> {
               LayoutRenderer(
                 layout: widget.layout,
                 locationOverrides: _activeLocationOverrides, // ส่ง List ของ Location items
+                onceOverrides: _activeOnceOverrides,
+                onOnceFinished: _handleOnceFinished,
                 fullscreenWidgetId: _playlistFullscreenId,
                 onWidgetFullscreen: _handleWidgetFullscreen,
               ),
@@ -438,9 +497,23 @@ class _PlayerPageState extends State<PlayerPage> {
                   color: Colors.black,
                   child: SizedBox.expand(
                     child: ContentPlayer(
-                      key: ValueKey("loc-full-${_currentLocationId}"), 
+                      key: ValueKey("loc-full-${_currentLocationId}"),
                       widget: _activeFullscreenOverride!,
                       isTriggerMode: false, // Loop
+                    ),
+                  ),
+                ),
+
+              // Location Fullscreen Overlay แบบ 'once' (เล่นครั้งเดียวแล้วปิด)
+              if (_activeOnceFullscreen != null)
+                Container(
+                  color: Colors.black,
+                  child: SizedBox.expand(
+                    child: ContentPlayer(
+                      key: ValueKey(_activeOnceFullscreen!.key),
+                      widget: _activeOnceFullscreen!.widget,
+                      isTriggerMode: true,
+                      onFinished: _onceFullscreenFinisher(_activeOnceFullscreen!.key),
                     ),
                   ),
                 ),

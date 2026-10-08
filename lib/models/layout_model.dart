@@ -1,5 +1,8 @@
 import 'dart:convert';
 
+/// รายการ playlist แบบ 'once': ไม่อยู่ใน loop ปกติ เล่นครั้งเดียวเมื่อรถถึง locationId
+bool isOnceItem(dynamic item) => item is Map && item['playMode'] == 'once';
+
 class SignageLayout {
   final String id;
   final String name;

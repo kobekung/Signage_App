@@ -218,7 +218,10 @@ class TtsService {
     if (!enabled.value || route == null) return;
     if (index < 0 || index >= route.stations.length) return;
     _lastIndex = index;
-    await _announce((gen) => _announceStation(route, index, gen));
+    // สถานีก่อนจุดคั่น (id 0) ต้องเล่นจนจบ ห้ามสถานีถัดไปตัด (ตรงกับที่แท็บเล็ตคนขับพักรอที่จุดคั่น)
+    final beforeBreak =
+        index + 1 < route.stations.length && route.stations[index + 1].id == 0;
+    await _announce((gen) => _announceStation(route, index, gen), protect: beforeBreak);
   }
 
   /// ใช้ตอนโหลดข้อมูลเสียงของ route ไม่ได้ — พูดจาก template ด้วยชื่อจาก busround-active
@@ -248,11 +251,22 @@ class TtsService {
         }));
   }
 
+  /// ประกาศที่ห้ามถูกตัด (สถานีก่อนจุดคั่น) ที่กำลังเล่นอยู่ — ประกาศใหม่ต้องรอจนจบ
+  Future<void>? _protected;
+
   /// เริ่มประกาศใหม่: ตัดของเก่า, ปิด bg + ลดเสียงวิดีโอ ระหว่างเล่น แล้วเปิดกลับเมื่อจบ
-  Future<void> _announce(Future<void> Function(int gen) body) async {
+  /// [protect] = ประกาศนี้ห้ามถูกประกาศถัดไปตัดกลางคัน
+  Future<void> _announce(Future<void> Function(int gen) body, {bool protect = false}) async {
+    final pending = _protected;
+    if (pending != null) {
+      await pending.timeout(const Duration(minutes: 5), onTimeout: () {});
+    }
     final gen = ++_generation;
     await stop();
     if (gen != _generation) return;
+
+    final guard = protect ? Completer<void>() : null;
+    if (guard != null) _protected = guard.future;
 
     _duckCount++;
     if (_duckCount == 1) {
@@ -268,6 +282,10 @@ class TtsService {
     } catch (e) {
       debugPrint("Announcement failed: $e");
     } finally {
+      if (guard != null) {
+        guard.complete();
+        if (identical(_protected, guard.future)) _protected = null;
+      }
       _duckCount--;
       if (_duckCount == 0) {
         _isSpeaking = false;

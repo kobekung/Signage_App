@@ -2,19 +2,32 @@ import 'package:flutter/material.dart';
 import '../models/layout_model.dart';
 import 'content_player.dart';
 
+/// playlist แบบ 'once' ที่ถูก trigger: key ใหม่ทุกครั้งที่ถึง location เพื่อเริ่มเล่นใหม่
+class OnceOverride {
+  final String key;
+  final SignageWidget widget;
+  const OnceOverride({required this.key, required this.widget});
+}
+
 class LayoutRenderer extends StatelessWidget {
   final SignageLayout layout;
-  
+
   // [UPDATED] รับเป็น Map<WidgetId, List<Items>>
-  final Map<String, List<dynamic>> locationOverrides; 
+  final Map<String, List<dynamic>> locationOverrides;
+
+  // Map<WidgetId, OnceOverride> เล่นครั้งเดียวแล้วเรียก onOnceFinished
+  final Map<String, OnceOverride> onceOverrides;
+  final void Function(String widgetId, String key) onOnceFinished;
 
   final String? fullscreenWidgetId;
   final Function(String id, bool isFull) onWidgetFullscreen;
 
   const LayoutRenderer({
-    super.key, 
+    super.key,
     required this.layout,
     required this.locationOverrides,
+    this.onceOverrides = const {},
+    required this.onOnceFinished,
     this.fullscreenWidgetId,
     required this.onWidgetFullscreen,
   });
@@ -63,14 +76,18 @@ class LayoutRenderer extends StatelessWidget {
                     child: Container(color: _parseColor(layout.backgroundColor)),
                   ),
 
-                  // Normal widgets
+                  // Normal widgets (widget ที่มีแต่รายการ 'once' ซ่อนไว้จนกว่าจะถึง location)
+                  // คงช่อง Positioned ไว้ (แค่ไม่วาดอะไร) เพื่อไม่ให้ลำดับเลื่อนจน widget อื่น (เช่น webview) rebuild ใหม่
                   ...normalWidgets.map((w) {
                     return Positioned(
+                      key: ValueKey("pos-${w.id}"),
                       left: dx + (w.x * scale),
                       top: dy + (w.y * scale),
                       width: w.width * scale,
                       height: w.height * scale,
-                      child: _buildContentWithOverrideCheck(w),
+                      child: _isVisible(w)
+                          ? _buildContentWithOverrideCheck(w)
+                          : const SizedBox.shrink(),
                     );
                   }),
 
@@ -92,7 +109,28 @@ class LayoutRenderer extends StatelessWidget {
     );
   }
 
+  /// ซ่อน widget ที่ playlist มีแต่รายการ 'once' และยังไม่ถูก trigger
+  /// (ไม่งั้นจะเห็นกล่องดำว่างๆ ทับ widget ด้านล่าง)
+  bool _isVisible(SignageWidget w) {
+    if (onceOverrides.containsKey(w.id)) return true;
+    if (locationOverrides[w.id]?.isNotEmpty ?? false) return true;
+    final playlist = w.properties['playlist'];
+    if (playlist is! List || playlist.isEmpty) return true;
+    return playlist.any((item) => !isOnceItem(item));
+  }
+
   Widget _buildContentWithOverrideCheck(SignageWidget w) {
+    // แบบ 'once' มาก่อน เล่นจบแล้วกลับไป location loop / playlist ปกติ
+    final once = onceOverrides[w.id];
+    if (once != null) {
+      return ContentPlayer(
+        key: ValueKey(once.key),
+        widget: once.widget,
+        isTriggerMode: true,
+        onFinished: () => onOnceFinished(w.id, once.key),
+      );
+    }
+
     // [UPDATED] รับมาเป็น List ของ Items
     final overrideItems = locationOverrides[w.id];
 
