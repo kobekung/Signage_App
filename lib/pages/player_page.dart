@@ -67,6 +67,9 @@ class _PlayerPageState extends State<PlayerPage> {
   // Normal Playlist Fullscreen State
   String? _playlistFullscreenId;
 
+  // layout ที่แทน {busno}/{com_id} ใน URL ด้วยรถคันนี้แล้ว (1 layout ใช้ได้หลายคัน)
+  late final SignageLayout _layout = resolveBusVars(widget.layout, widget.busId, widget.companyId);
+
   String get _busApiUrl => 'https://public.bussing.app/bus-info/busround-active?busno=${widget.busId}&com_id=${widget.companyId}';
 
   @override
@@ -252,7 +255,7 @@ class _PlayerPageState extends State<PlayerPage> {
     OnceOverride? newOnceFullscreen;
 
     if (locationId != null) {
-      for (final widget in widget.layout.widgets) {
+      for (final widget in _layout.widgets) {
         final props = widget.properties;
         if (props['playlist'] is List) {
           final playlist = props['playlist'] as List;
@@ -483,7 +486,7 @@ class _PlayerPageState extends State<PlayerPage> {
             children: [
               // Main Renderer
               LayoutRenderer(
-                layout: widget.layout,
+                layout: _layout,
                 locationOverrides: _activeLocationOverrides, // ส่ง List ของ Location items
                 onceOverrides: _activeOnceOverrides,
                 onOnceFinished: _handleOnceFinished,

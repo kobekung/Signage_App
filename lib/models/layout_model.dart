@@ -3,6 +3,41 @@ import 'dart:convert';
 /// รายการ playlist แบบ 'once': ไม่อยู่ใน loop ปกติ เล่นครั้งเดียวเมื่อรถถึง locationId
 bool isOnceItem(dynamic item) => item is Map && item['playMode'] == 'once';
 
+/// แทน {busno} / {com_id} ใน URL ของทุก widget ด้วยรถคันนี้
+/// (studio ให้ 1 layout ใช้กับรถหลายคันได้ เช่น ...tv02.html?busno={busno}&com_id={com_id})
+SignageLayout resolveBusVars(SignageLayout layout, int busId, int companyId) {
+  String resolve(String s) => s
+      .replaceAll('{busno}', busId.toString())
+      .replaceAll('{com_id}', companyId.toString());
+
+  dynamic resolveValue(dynamic value) {
+    if (value is String) return resolve(value);
+    if (value is List) return value.map(resolveValue).toList();
+    if (value is Map) return value.map((k, v) => MapEntry(k, resolveValue(v)));
+    return value;
+  }
+
+  return SignageLayout(
+    id: layout.id,
+    name: layout.name,
+    width: layout.width,
+    version: layout.version,
+    height: layout.height,
+    backgroundColor: layout.backgroundColor,
+    widgets: layout.widgets
+        .map((w) => SignageWidget(
+              id: w.id,
+              type: w.type,
+              x: w.x,
+              y: w.y,
+              width: w.width,
+              height: w.height,
+              properties: Map<String, dynamic>.from(resolveValue(w.properties) as Map),
+            ))
+        .toList(),
+  );
+}
+
 class SignageLayout {
   final String id;
   final String name;
