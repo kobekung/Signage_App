@@ -42,6 +42,27 @@ class VideoConfig {
   
   // 🔍 Debug
   static const bool SHOW_DEBUG_LOGS = true;
+
+  // 📉 Low-RAM Mode (กล่อง RAM <= 2GB ใช้ config แบบบราน small)
+  // กล่อง 2GB รายงาน MemTotal ~1.8-1.9GB, กล่อง 4GB ~3.6-3.8GB → ตัดที่ 3GB
+  static const int LOW_RAM_THRESHOLD_MB = 3 * 1024;
+  static const int LOW_RAM_BUFFER_SIZE_MB = 4;
+
+  static final int TOTAL_RAM_MB = _readTotalRamMb();
+  static final bool IS_LOW_RAM =
+      TOTAL_RAM_MB > 0 && TOTAL_RAM_MB < LOW_RAM_THRESHOLD_MB;
+
+  static int _readTotalRamMb() {
+    try {
+      if (!Platform.isAndroid && !Platform.isLinux) return -1;
+      final info = File('/proc/meminfo').readAsStringSync();
+      final match = RegExp(r'MemTotal:\s+(\d+)\s*kB').firstMatch(info);
+      if (match == null) return -1;
+      return int.parse(match.group(1)!) ~/ 1024;
+    } catch (_) {
+      return -1; // อ่านไม่ได้ → ถือว่าไม่ใช่ low-RAM (ใช้ config ปกติ)
+    }
+  }
 }
 
 class ContentPlayer extends StatefulWidget {
@@ -81,7 +102,8 @@ class _ContentPlayerState extends State<ContentPlayer> {
       print("📺 LOOP-AWARE RESTART MODE");
       print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
       print("🎬 HW Decode: ${VideoConfig.HWDEC_MODE}");
-      print("📦 Buffer: ${VideoConfig.BUFFER_SIZE_MB}MB");
+      print("🧠 RAM: ${VideoConfig.TOTAL_RAM_MB}MB → ${VideoConfig.IS_LOW_RAM ? 'LOW-RAM (small config)' : 'NORMAL'}");
+      print("📦 Buffer: ${VideoConfig.IS_LOW_RAM ? VideoConfig.LOW_RAM_BUFFER_SIZE_MB : VideoConfig.BUFFER_SIZE_MB}MB");
       print("🔄 Restart Check: ${VideoConfig.RESTART_CHECK_MINUTES}min");
       print("⏸️ Wait for Loop End: ${VideoConfig.RESTART_ONLY_AT_LOOP_END ? 'YES ✅' : 'NO'}");
       print("🧹 Cache Flush: ${VideoConfig.ENABLE_CACHE_FLUSH ? 'YES' : 'NO (disabled for looping)'}");
@@ -735,8 +757,10 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
   }
 
   Future<void> _init() async {
-    final bufferBytes = VideoConfig.BUFFER_SIZE_MB * 1024 * 1024;
-    
+    final lowRam = VideoConfig.IS_LOW_RAM;
+    final bufferMb = lowRam ? VideoConfig.LOW_RAM_BUFFER_SIZE_MB : VideoConfig.BUFFER_SIZE_MB;
+    final bufferBytes = bufferMb * 1024 * 1024;
+
     final p = Player(
       configuration: PlayerConfiguration(
         bufferSize: bufferBytes,
@@ -746,7 +770,22 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     _player = p;
 
     final native = p.platform as dynamic;
-    if (native != null) {
+    if (native != null && lowRam) {
+      // 📉 config แบบบราน small: ไม่ตั้ง cache/demuxer/threads เพิ่ม ปล่อยตาม bufferSize
+      try {
+        await native.setProperty('hwdec', 'no');
+        await native.setProperty('hwdec-codecs', 'all');
+        await native.setProperty('profile', 'fast');
+        await native.setProperty('video-sync', 'audio');
+        if (VideoConfig.SHOW_DEBUG_LOGS) {
+          print("🎬 Init (LOW-RAM): hwdec=no, buffer=${bufferMb}MB");
+        }
+      } catch (e) {
+        if (VideoConfig.SHOW_DEBUG_LOGS) {
+          print("❌ Init failed: $e");
+        }
+      }
+    } else if (native != null) {
       try {
         // hwdec
         try {
@@ -795,8 +834,8 @@ class _DisposableVideoPlayerState extends State<_DisposableVideoPlayer>
     _controller = VideoController(
       p,
       configuration: VideoControllerConfiguration(
-        enableHardwareAcceleration: VideoConfig.HWDEC_MODE != 'no',
-        androidAttachSurfaceAfterVideoParameters: false,
+        enableHardwareAcceleration: lowRam ? true : VideoConfig.HWDEC_MODE != 'no',
+        androidAttachSurfaceAfterVideoParameters: lowRam,
       ),
     );
 
