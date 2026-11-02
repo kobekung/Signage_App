@@ -51,10 +51,13 @@ class _LoadingPageState extends State<LoadingPage> {
         // ✅ ใช้ busId/companyId ที่ save ไว้ตอน online แทนการใส่ 0
         final int busId = prefs.getInt('cached_bus_id') ?? 0;
         final int companyId = prefs.getInt('cached_company_id') ?? 0;
+        final String signageType = parseSignageType(prefs.getString('cached_signage_type'));
+        final int? locationId = prefs.getInt('cached_location_id');
 
         if (!mounted) return false;
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => PlayerPage(
-            layout: layout, busId: busId, companyId: companyId
+            layout: layout, busId: busId, companyId: companyId,
+            signageType: signageType, locationId: locationId
         )));
         return true;
       }
@@ -111,7 +114,17 @@ class _LoadingPageState extends State<LoadingPage> {
       final serverLayoutId = busConfig['layout_id'] ?? busConfig['id'];
       final int busId = int.tryParse(busConfig['bus_id'].toString()) ?? 0;
       final int companyId = int.tryParse(busConfig['company_id'].toString()) ?? 0;
-      final serverVersion = int.tryParse(busConfig['layout_version'].toString()) ?? 1;
+      final String signageType = parseSignageType(busConfig['signage_type']);
+      final int? locationId = parseLocationId(busConfig['location_id']);
+
+      // เก็บไว้ใช้ตอน offline (จอป้ายต้องไม่กลับไปเป็นจอบนรถ)
+      await prefs.setString('cached_signage_type', signageType);
+      if (locationId == null) {
+        await prefs.remove('cached_location_id');
+      } else {
+        await prefs.setInt('cached_location_id', locationId);
+      }
+final serverVersion = int.tryParse(busConfig['layout_version'].toString()) ?? 1;
 
       if (serverLayoutId == null) {
         setState(() => _status = "No layout assigned.\nWaiting for admin...");
@@ -142,7 +155,7 @@ class _LoadingPageState extends State<LoadingPage> {
         await prefs.setInt('cached_bus_id', busId);
         await prefs.setInt('cached_company_id', companyId);
 
-        await api.updateBusStatus(busId, serverVersion);
+        await api.reportStatus(signageType, busId, locationId, serverVersion);
       } else {
         setState(() => _status = "Starting Player...");
         layout = await api.fetchLayoutById(serverLayoutId.toString());
@@ -153,7 +166,8 @@ class _LoadingPageState extends State<LoadingPage> {
 
       if(!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => PlayerPage(
-          layout: layout, busId: busId, companyId: companyId
+          layout: layout, busId: busId, companyId: companyId,
+          signageType: signageType, locationId: locationId
       )));
 
     } catch (e) {

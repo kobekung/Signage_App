@@ -219,14 +219,16 @@ class _ContentPlayerState extends State<ContentPlayer> {
             ? Image.file(cachedFile, fit: BoxFit.cover)
             : Image.network(url.toString(), fit: BoxFit.cover);
       }
-    } else if (type == 'webview') {
-      final url = (item['url'] ?? 'https://google.com').toString();
+    } else if (type == 'webview' || type == 'web') {
+      // โหมดป้ายรถเมล์: ต่อ day=1/0 ตามวันนี้ (รายการวนทุก 15 วิ → ข้ามเที่ยงคืนแล้ว URL เปลี่ยนเอง)
+      final url = resolveSignageUrl((item['url'] ?? 'https://google.com').toString(), item);
       if (_cachedWebHost == null || _cachedWebUrl != url) {
         _cachedWebUrl = url;
         _cachedWebHost = _WebviewHost(url: url);
       }
       nextWidget = _cachedWebHost!;
-      duration = 15;
+      // 'web' = หน้าเว็บในเพลย์ลิสต์ ใช้เวลาที่ตั้งไว้, widget webview เดิมใช้ 15 วิ
+      if (type == 'webview') duration = 15;
     } else if (type == 'ticker') {
       nextWidget = _TickerItem(
         text: item['text'] ?? '',

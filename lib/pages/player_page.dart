@@ -25,13 +25,19 @@ class PlayerPage extends StatefulWidget {
   final SignageLayout layout;
   final int busId;
   final int companyId;
+  final String signageType; // 'bus' | 'stop'
+  final int? locationId; // ป้ายที่จอ 'stop' ติดตั้ง
 
   const PlayerPage({
-    super.key, 
+    super.key,
     required this.layout,
     required this.busId,
-    required this.companyId
+    required this.companyId,
+    this.signageType = 'bus',
+    this.locationId,
   });
+
+  bool get isStop => signageType == 'stop';
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -68,27 +74,29 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _playlistFullscreenId;
 
   // layout ที่แทน {busno}/{com_id} ใน URL ด้วยรถคันนี้แล้ว (1 layout ใช้ได้หลายคัน)
-  late final SignageLayout _layout = resolveBusVars(widget.layout, widget.busId, widget.companyId);
+  late final SignageLayout _layout = resolveBusVars(widget.layout, widget.busId, widget.companyId, widget.locationId);
 
   String get _busApiUrl => 'https://public.bussing.app/bus-info/busround-active?busno=${widget.busId}&com_id=${widget.companyId}';
 
   @override
   void initState() {
     super.initState();
-    print("🚀 Player Start: Bus ${widget.busId}, Com ${widget.companyId}");
-    
+    print("🚀 Player Start: ${widget.isStop ? 'Stop #${widget.locationId}' : 'Bus ${widget.busId}'}, Com ${widget.companyId}");
+
     // 0. เปิด Kiosk Mode (ล็อคปุ่ม Home)
     // _setKioskMode(true);
 
-    // 1. Check Location (30s)
-    _locationPollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkBusLocation());
+    // 1. Check Location (5s) — จอป้ายรถเมล์ไม่ผูกกับรถ ไม่ต้องติดตามตำแหน่ง/เสียงประกาศ เล่นตาม layout ตลอด
+    if (!widget.isStop) {
+      _locationPollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkBusLocation());
+    }
 
     // 2. Check Update (5m)
     _updateCheckTimer = Timer.periodic(const Duration(minutes: 5), (_) => _checkForLayoutUpdate());
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
         // เช็ค Location ทันที 1 รอบ (ไม่ต้องรอ 30 วิ)
-        _checkBusLocation(); 
+        if (!widget.isStop) _checkBusLocation(); 
         
         // รอ 5 วินาที ให้วิดีโอเล่นนิ่งๆ ก่อน ค่อยเช็คอัปเดตแอป (กันแย่งเน็ต)
         Future.delayed(const Duration(seconds: 5), () {
@@ -367,6 +375,14 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+  Future<void> _cacheLocationId(SharedPreferences prefs, int? locationId) async {
+    if (locationId == null) {
+      await prefs.remove('cached_location_id');
+    } else {
+      await prefs.setInt('cached_location_id', locationId);
+    }
+  }
+
   Future<void> _checkForLayoutUpdate() async {
     if (_isDownloadingUpdate) return;
     try {
@@ -382,9 +398,26 @@ class _PlayerPageState extends State<PlayerPage> {
       final int serverVersion = busConfig['layout_version'] ?? 0;
       // ✅ ใช้ bus_id จาก server เสมอ (กัน busId = 0 จาก offline mode)
       final int freshBusId = int.tryParse(busConfig['bus_id']?.toString() ?? '') ?? widget.busId;
+      final String freshType = parseSignageType(busConfig['signage_type']);
+      final int? freshLocationId = parseLocationId(busConfig['location_id']);
 
       final bool isDifferentLayout = serverLayoutId.toString() != widget.layout.id;
       final bool isNewerVersion = serverVersion > widget.layout.version;
+
+      // เปลี่ยนจอบนรถ ↔ ป้าย หรือย้ายป้าย โดย layout เดิม → เริ่ม player ใหม่ ไม่ต้องโหลดไฟล์
+      if (serverLayoutId != null && !isDifferentLayout && !isNewerVersion &&
+          (freshType != widget.signageType || freshLocationId != widget.locationId)) {
+        await prefs.setString('cached_signage_type', freshType);
+        await _cacheLocationId(prefs, freshLocationId);
+        if (mounted) {
+          Navigator.pushReplacement(context, PageRouteBuilder(
+            pageBuilder: (_,__,___) => PlayerPage(layout: widget.layout, busId: freshBusId, companyId: widget.companyId,
+                signageType: freshType, locationId: freshLocationId),
+            transitionDuration: Duration.zero
+          ));
+        }
+        return;
+      }
 
       if (serverLayoutId != null && (isDifferentLayout || isNewerVersion)) {
         print("📢 Update Found: V.$serverVersion");
@@ -397,11 +430,14 @@ class _PlayerPageState extends State<PlayerPage> {
         await prefs.setInt('cached_layout_version', serverVersion);
         await prefs.setString('cached_layout_json', jsonEncode(newLayout.toJson()));
         await prefs.setInt('cached_bus_id', freshBusId); // ✅ อัพเดท cache
-        await api.updateBusStatus(freshBusId, serverVersion); // ✅ ใช้ freshBusId
+        await prefs.setString('cached_signage_type', freshType);
+        await _cacheLocationId(prefs, freshLocationId);
+        await api.reportStatus(freshType, freshBusId, freshLocationId, serverVersion); // ✅ ใช้ freshBusId
 
         if (mounted) {
           Navigator.pushReplacement(context, PageRouteBuilder(
-            pageBuilder: (_,__,___) => PlayerPage(layout: newLayout, busId: freshBusId, companyId: widget.companyId),
+            pageBuilder: (_,__,___) => PlayerPage(layout: newLayout, busId: freshBusId, companyId: widget.companyId,
+                signageType: freshType, locationId: freshLocationId),
             transitionDuration: Duration.zero
           ));
         }
@@ -450,7 +486,7 @@ class _PlayerPageState extends State<PlayerPage> {
     final String? action = await showDialog<String>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => _AdminMenuDialog(busId: widget.busId),
+      builder: (context) => _AdminMenuDialog(busId: widget.busId, label: widget.isStop ? 'Stop #${widget.locationId ?? '-'}' : 'Bus #${widget.busId}'),
     );
 
     if (action == 'exit') {
@@ -566,7 +602,8 @@ class _AdminColors {
 
 class _AdminMenuDialog extends StatefulWidget {
   final int busId;
-  const _AdminMenuDialog({required this.busId});
+  final String label; // Bus #id หรือ Stop #location
+  const _AdminMenuDialog({required this.busId, required this.label});
 
   @override
   State<_AdminMenuDialog> createState() => _AdminMenuDialogState();
@@ -936,7 +973,7 @@ class _AdminMenuDialogState extends State<_AdminMenuDialog> {
                     const SizedBox(height: 2),
                     Text(
                       [
-                        'Bus #${widget.busId}',
+                        widget.label,
                         if (_appVersion.isNotEmpty) _appVersion,
                       ].join('  •  '),
                       style: const TextStyle(color: Color(0xFFB9C2DA), fontSize: 13),

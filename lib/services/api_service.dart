@@ -64,6 +64,29 @@ class ApiService {
     }
   }
 
+  // [3.1] จอที่ป้ายรถเมล์ รายงานเวอร์ชันตาม location
+  Future<void> updateStopStatus(int locationId, int activeVersion) async {
+    try {
+      await http.put(
+        Uri.parse('$baseUrl/bus/stop/$locationId/ack'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'version': activeVersion}),
+      );
+      print("✅ Reported status: Stop $locationId is on version $activeVersion");
+    } catch (e) {
+      print("⚠️ Failed to report status: $e");
+    }
+  }
+
+  /// รายงานเวอร์ชันตามชนิดจอ
+  Future<void> reportStatus(String signageType, int busId, int? locationId, int activeVersion) async {
+    if (signageType == 'stop') {
+      if (locationId != null) await updateStopStatus(locationId, activeVersion);
+    } else {
+      await updateBusStatus(busId, activeVersion);
+    }
+  }
+
   // (Optional) ดึง Layout ทั้งหมด
   Future<List<SignageLayout>> fetchLayouts() async {
     try {

@@ -49,6 +49,7 @@ class PreloadService {
       if (w.properties['url'] != null) urls.add(w.properties['url'].toString());
       if (w.properties['playlist'] is List) {
         for (var item in w.properties['playlist']) {
+          if (item['type'] == 'web') continue; // หน้าเว็บโหลดสด ไม่ต้องดาวน์โหลดเก็บ
           if (item['url'] != null) urls.add(item['url'].toString());
         }
       }
